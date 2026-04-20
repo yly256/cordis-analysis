@@ -7,8 +7,16 @@ import streamlit as st
 import duckdb
 import pandas as pd
 import plotly.express as px
+import urllib.request
+from pathlib import Path
 
 DB_PATH = "cordis.duckdb"
+DB_URL = "https://github.com/yly256/cordis-analysis/releases/download/v1.0/cordis.duckdb"
+
+
+if not Path(DB_PATH).exists():
+    with st.spinner("Downloading database (first run, ~145 MB)…"):
+        urllib.request.urlretrieve(DB_URL, DB_PATH)
 
 st.set_page_config(
     page_title="CORDIS Analytics",
