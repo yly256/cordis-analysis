@@ -326,11 +326,18 @@ def _render_query_table(rows_df: pd.DataFrame, key_prefix: str, height: int = 32
     )
     sel = rows_df.iloc[sel_idx]
 
-    if c2.button("▶ Run", key=f"{key_prefix}_run"):
-        st.session_state[f"_{key_prefix}_run_data"] = sel.to_dict()
+    with st.form(key=f"{key_prefix}_form"):
+        fc1, fc2 = st.columns([5, 1])
+        sel_idx = fc1.selectbox(
+            "Select", range(len(options)),
+            format_func=lambda i: options[i],
+            label_visibility="collapsed",
+            key=f"{key_prefix}_sel",
+        )
+        _submitted = fc2.form_submit_button("▶ Run")
 
-    with st.expander("Summary for selected query"):
-        st.write(sel["summary"])
+    if _submitted:
+        st.session_state[f"_{key_prefix}_run_data"] = rows_df.iloc[sel_idx].to_dict()
 
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
@@ -656,23 +663,40 @@ with tab5:
         last10 = pd.read_sql_query(
             "SELECT * FROM query_log ORDER BY last_run_at DESC LIMIT 10", hcon
         )
-        _render_query_table(last10, "ai5", height=280)
-        _ai5_rd = st.session_state.pop("_ai5_run_data", None)
-        if _ai5_rd:
-            with st.spinner("Running query…"):
-                try:
-                    _r = con.execute(_ai5_rd["sql_text"]).df()
-                    st.success(f"{len(_r):,} rows returned")
-                    st.dataframe(_r, width="stretch", hide_index=True)
-                    st.download_button("⬇ Download CSV", _r.to_csv(index=False),
-                                       "ai_query_result.csv", "text/csv")
-                    if _ai5_rd.get("summary"):
-                        st.info(_ai5_rd["summary"])
-                    _save_query(_ai5_rd["description"], _ai5_rd["question"],
-                                _ai5_rd["sql_hash"], _ai5_rd["sql_text"],
-                                _ai5_rd.get("summary", ""))
-                except Exception as _e:
-                    st.info(f"The cached query couldn't run — try typing the question again.\n\n_Detail: {_e}_")
+        if last10.empty:
+            st.caption("No queries run yet.")
+        else:
+            _disp = pd.DataFrame({
+                "#":           range(1, len(last10) + 1),
+                "Description": last10["description"].str[:35],
+                "Question":    last10["question"].str[:60],
+                "Runs":        last10["run_count"].astype(int),
+                "Last run":    last10["last_run_at"].str[:10],
+            })
+            st.dataframe(_disp, width="stretch", hide_index=True, height=280)
+            _opts = [f"{i+1}. {row['description']}" for i, (_, row) in enumerate(last10.iterrows())]
+            with st.form(key="ai5_form"):
+                _fc1, _fc2 = st.columns([5, 1])
+                _ai5_idx = _fc1.selectbox("Select", range(len(_opts)),
+                                          format_func=lambda i: _opts[i],
+                                          label_visibility="collapsed")
+                _ai5_submitted = _fc2.form_submit_button("▶ Run")
+            if _ai5_submitted:
+                _ai5_sel = last10.iloc[_ai5_idx].to_dict()
+                with st.spinner("Running query…"):
+                    try:
+                        _r = con.execute(_ai5_sel["sql_text"]).df()
+                        st.success(f"{len(_r):,} rows returned")
+                        st.dataframe(_r, width="stretch", hide_index=True)
+                        st.download_button("⬇ Download CSV", _r.to_csv(index=False),
+                                           "ai_query_result.csv", "text/csv")
+                        if _ai5_sel.get("summary"):
+                            st.info(_ai5_sel["summary"])
+                        _save_query(_ai5_sel["description"], _ai5_sel["question"],
+                                    _ai5_sel["sql_hash"], _ai5_sel["sql_text"],
+                                    _ai5_sel.get("summary", ""))
+                    except Exception as _e:
+                        st.info(f"The cached query couldn't run — try typing the question again.\n\n_Detail: {_e}_")
     else:
         st.caption("Query history unavailable.")
 
