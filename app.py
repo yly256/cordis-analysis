@@ -359,7 +359,12 @@ if "pending_run" in st.session_state:
     """, height=0)
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
-st.markdown("""
+if "run_count" not in st.session_state:
+    st.session_state.run_count = 0
+st.session_state.run_count += 1
+
+if st.session_state.run_count == 1:
+    st.markdown("""
 <style>
 @keyframes cordis-bounce {
   0%, 100% { transform: translateY(0); }
