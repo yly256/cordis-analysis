@@ -31,14 +31,13 @@ HISTORY_DB = str(Path(tempfile.gettempdir()) / "query_history.db")
 print(f"[BOOT] DB_PATH   = {DB_PATH}  exists={Path(DB_PATH).exists()}")
 print(f"[BOOT] HISTORY_DB= {HISTORY_DB}")
 
-@st.cache_resource
 def _get_ai_client():
     key = os.getenv("ANTHROPIC_API_KEY", "")
     if not key:
         try:
             key = st.secrets["ANTHROPIC_API_KEY"]
         except Exception as _e:
-            st.error(f"Could not load ANTHROPIC_API_KEY.\n\nos.getenv: empty\nst.secrets error: {type(_e).__name__}: {_e}")
+            st.error(f"st.secrets[\"ANTHROPIC_API_KEY\"] raised {type(_e).__name__}: {_e}")
             st.stop()
     if not key:
         st.error("ANTHROPIC_API_KEY is empty. Check Streamlit Cloud → Settings → Secrets.")
