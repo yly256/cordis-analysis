@@ -23,7 +23,7 @@ load_dotenv()
 _APP_DIR  = Path(__file__).parent
 DB_PATH   = str(_APP_DIR / "cordis.duckdb")
 DB_URL    = "https://github.com/yly256/cordis-analysis/releases/download/v1.0/cordis.duckdb"
-HISTORY_DB = "/tmp/query_history.db"
+HISTORY_DB = str(_APP_DIR / "query_history.db")
 
 @st.cache_resource
 def _get_ai_client():
