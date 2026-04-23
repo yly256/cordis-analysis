@@ -335,31 +335,13 @@ def _render_query_table(rows_df: pd.DataFrame, key_prefix: str, height: int = 32
             "summary":     sel["summary"],
             "last_run_at": sel["last_run_at"],
         }
+        if key_prefix == "h6":
+            st.session_state["_history_run_initiated"] = True
         st.rerun()
 
     with st.expander("Summary for selected query"):
         st.write(sel["summary"])
 
-
-# ── Auto-switch to AI Query tab when a history run is pending ──────────────────
-if "pending_run" in st.session_state:
-    _components.html("""
-        <script>
-        // Use double-rAF so the tab click lands after the first browser paint
-        requestAnimationFrame(function() {
-            requestAnimationFrame(function() {
-                var tabs = window.parent.document.querySelectorAll('button[role="tab"]');
-                for (var i = 0; i < tabs.length; i++) {
-                    if (tabs[i].textContent.includes('AI Query')) {
-                        tabs[i].click();
-                        window.parent.scrollTo({ top: 0, behavior: 'smooth' });
-                        break;
-                    }
-                }
-            });
-        });
-        </script>
-    """, height=0)
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
 if "run_count" not in st.session_state:
@@ -672,60 +654,65 @@ with tab5:
                 st.info(summary)
         else:
             # ── Normal typed query path ───────────────────────────────────────
-            guard = _check_relevance(question)
-            if not guard.get("relevant", False):
-                st.warning(
-                    f"That question doesn't seem related to CORDIS data — "
-                    f"{guard.get('reason', 'please ask about EU research projects, budgets, or organisations.')} "
-                    "Try rephrasing."
-                )
-            else:
-                with st.spinner("Generating SQL…"):
-                    sql = _generate_sql(question, W())
-                with st.expander("Generated SQL", expanded=False):
-                    st.code(sql, language="sql")
+            try:
+                guard = _check_relevance(question)
+                if not guard.get("relevant", False):
+                    st.warning(
+                        f"That question doesn't seem related to CORDIS data — "
+                        f"{guard.get('reason', 'please ask about EU research projects, budgets, or organisations.')} "
+                        "Try rephrasing."
+                    )
+                else:
+                    with st.spinner("Generating SQL…"):
+                        sql = _generate_sql(question, W())
+                    with st.expander("Generated SQL", expanded=False):
+                        st.code(sql, language="sql")
 
-                result = None
-                with st.spinner("Running query…"):
-                    try:
-                        result = con.execute(sql).df()
-                    except Exception as e:
-                        with st.spinner("Fixing query…"):
-                            sql = _fix_sql(question, sql, str(e), W())
-                        with st.expander("Corrected SQL", expanded=False):
-                            st.code(sql, language="sql")
+                    result = None
+                    with st.spinner("Running query…"):
                         try:
                             result = con.execute(sql).df()
-                        except Exception as e2:
-                            st.info(
-                                "Sorry, I wasn't able to generate a working query for that question. "
-                                "Try rephrasing, or use the SQL tab for full control.\n\n"
-                                f"_Technical detail: {e2}_"
-                            )
+                        except Exception as e:
+                            with st.spinner("Fixing query…"):
+                                sql = _fix_sql(question, sql, str(e), W())
+                            with st.expander("Corrected SQL", expanded=False):
+                                st.code(sql, language="sql")
+                            try:
+                                result = con.execute(sql).df()
+                            except Exception as e2:
+                                st.info(
+                                    "Sorry, I wasn't able to generate a working query for that question. "
+                                    "Try rephrasing, or use the SQL tab for full control.\n\n"
+                                    f"_Technical detail: {e2}_"
+                                )
 
-                if result is not None:
-                    st.success(f"{len(result):,} rows returned")
-                    st.dataframe(result, width="stretch", hide_index=True)
-                    st.download_button("⬇ Download CSV", result.to_csv(index=False),
-                                       "ai_query_result.csv", "text/csv")
-                    with st.spinner("Summarising…"):
-                        summary = _summarize(question, result)
-                    st.info(summary)
-                    with st.spinner("Saving to history…"):
-                        desc = _distill_description(question)
-                        _save_query(desc, question, _sql_hash(sql), sql, summary)
+                    if result is not None:
+                        st.success(f"{len(result):,} rows returned")
+                        st.dataframe(result, width="stretch", hide_index=True)
+                        st.download_button("⬇ Download CSV", result.to_csv(index=False),
+                                           "ai_query_result.csv", "text/csv")
+                        with st.spinner("Summarising…"):
+                            summary = _summarize(question, result)
+                        st.info(summary)
+                        with st.spinner("Saving to history…"):
+                            desc = _distill_description(question)
+                            _save_query(desc, question, _sql_hash(sql), sql, summary)
+            except anthropic.APIStatusError as _api_err:
+                if _api_err.status_code == 529:
+                    st.warning("Claude is overloaded right now — please wait a moment and try again.")
+                elif _api_err.status_code == 429:
+                    st.warning("Rate limit reached — please wait a moment and try again.")
+                else:
+                    st.warning(f"AI API error (HTTP {_api_err.status_code}) — please try again shortly.")
 
-    # ── Last 10 recent queries (read-only) ───────────────────────────────────
+    # ── Last 10 recent queries ───────────────────────────────────────────────
     st.divider()
-    st.markdown("**Recent queries** — go to **Query History / Log** tab to replay a past query")
+    st.markdown("**Recent queries** — select and click ▶ Run to replay without an API call")
     if hcon is not None:
         last10 = pd.read_sql_query(
-            "SELECT description, question, run_count, last_run_at FROM query_log ORDER BY last_run_at DESC LIMIT 10", hcon
+            "SELECT * FROM query_log ORDER BY last_run_at DESC LIMIT 10", hcon
         )
-        if not last10.empty:
-            st.dataframe(last10, width="stretch", height=280, hide_index=True)
-        else:
-            st.caption("No queries run yet.")
+        _render_query_table(last10, "ai5", height=280)
     else:
         st.caption("Query history unavailable.")
 
@@ -733,6 +720,9 @@ with tab5:
 with tab6:
     st.subheader("Query History / Log")
     st.caption("All unique queries ever run, sorted by popularity. Select one and click ▶ Run to replay — no API call needed.")
+
+    if st.session_state.pop("_history_run_initiated", False):
+        st.info("Query submitted — switch to the **AI Query** tab to see the results.")
 
     if hcon is None:
         st.caption("Query history unavailable.")
