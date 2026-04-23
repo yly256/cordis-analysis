@@ -67,6 +67,8 @@ st.markdown(f"""
     border-radius: 8px;
     margin-bottom: 1.2rem;
 }}
+/* ── EU blue headers ─────────────────────────────────────────────────────── */
+h1, h2, h3 {{ color: #003399 !important; }}
 /* ── Blue buttons (primary + form submit) ───────────────────────────────── */
 .stButton > button,
 .stFormSubmitButton > button {{
@@ -747,7 +749,7 @@ with tab6:
     st.markdown(
         "<p style='font-size:0.95em;color:#003399;font-weight:600;margin-bottom:0.5rem;'>"
         "All unique queries ever run, sorted by popularity. "
-        "Select one and click ▶ Run to replay — no API call needed.</p>",
+        "Select one and click ▶ Run to replay.</p>",
         unsafe_allow_html=True,
     )
 
