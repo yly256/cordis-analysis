@@ -24,7 +24,8 @@ _ai_client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
 _APP_DIR  = Path(__file__).parent
 DB_PATH   = str(_APP_DIR / "cordis.duckdb")
 DB_URL    = "https://github.com/yly256/cordis-analysis/releases/download/v1.0/cordis.duckdb"
-HISTORY_DB = str(_APP_DIR / "query_history.duckdb")
+# Use /tmp so DuckDB can create WAL/lock files; _APP_DIR may be a network mount on Streamlit Cloud
+HISTORY_DB = str(Path("/tmp") / "query_history.duckdb")
 
 if not Path(DB_PATH).exists():
     with st.spinner("Downloading database (first run, ~145 MB)…"):
