@@ -37,10 +37,11 @@ def _get_ai_client():
     if not key:
         try:
             key = st.secrets["ANTHROPIC_API_KEY"]
-        except Exception:
-            pass
+        except Exception as _e:
+            st.error(f"Could not load ANTHROPIC_API_KEY.\n\nos.getenv: empty\nst.secrets error: {type(_e).__name__}: {_e}")
+            st.stop()
     if not key:
-        st.error("ANTHROPIC_API_KEY not found. Add it in Streamlit Cloud → Settings → Secrets.")
+        st.error("ANTHROPIC_API_KEY is empty. Check Streamlit Cloud → Settings → Secrets.")
         st.stop()
     return anthropic.Anthropic(api_key=key)
 
