@@ -93,8 +93,19 @@ h1, h2, h3 {{ color: #003399 !important; }}
 </div>
 """, unsafe_allow_html=True)
 
-st.title("🇪🇺 CORDIS Project Analytics")
-st.caption("FP7 · H2020 · Horizon Europe — unified database")
+_col_title, _col_fb = st.columns([9, 1])
+with _col_title:
+    st.title("🇪🇺 CORDIS Project Analytics")
+    st.caption("FP7 · H2020 · Horizon Europe — unified database")
+with _col_fb:
+    st.markdown(
+        "<div style='display:flex;justify-content:flex-end;align-items:center;height:100%;padding-top:1.2rem;'>"
+        "<a href='https://www.orientos.com/feedback-form-cordis-analysis' target='_blank' rel='noopener noreferrer' "
+        "style='background:#003399;color:white;padding:8px 18px;border-radius:6px;"
+        "text-decoration:none;font-weight:600;font-size:0.88em;white-space:nowrap;'>"
+        "📝 Feedback</a></div>",
+        unsafe_allow_html=True,
+    )
 
 print("[BOOT] page config OK")
 
