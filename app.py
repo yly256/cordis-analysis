@@ -8,6 +8,7 @@ import re
 import sqlite3
 import hashlib
 import tempfile
+import base64
 from datetime import datetime
 import streamlit as st
 import duckdb
@@ -27,6 +28,12 @@ _APP_DIR  = Path(__file__).parent
 DB_PATH   = str(_APP_DIR / "cordis.duckdb")
 DB_URL    = "https://github.com/yly256/cordis-analysis/releases/download/v1.0/cordis.duckdb"
 HISTORY_DB = str(Path(tempfile.gettempdir()) / "query_history.db")
+
+_logo_file = _APP_DIR / "orientos_logo.png"
+_LOGO_SRC  = (
+    "data:image/png;base64," + base64.b64encode(_logo_file.read_bytes()).decode()
+    if _logo_file.exists() else ""
+)
 
 print(f"[BOOT] DB_PATH   = {DB_PATH}  exists={Path(DB_PATH).exists()}")
 print(f"[BOOT] HISTORY_DB= {HISTORY_DB}")
@@ -49,6 +56,40 @@ st.set_page_config(
     page_icon="🇪🇺",
     layout="wide",
 )
+
+st.markdown(f"""
+<style>
+/* ── Blue banner ─────────────────────────────────────────────────────────── */
+.orientos-banner {{
+    background: linear-gradient(135deg, #003399 0%, #1a56db 100%);
+    padding: 20px 32px;
+    text-align: center;
+    border-radius: 8px;
+    margin-bottom: 1.2rem;
+}}
+/* ── Blue buttons (primary + form submit) ───────────────────────────────── */
+.stButton > button,
+.stFormSubmitButton > button {{
+    background-color: #003399 !important;
+    color: white !important;
+    border: 1px solid #002277 !important;
+    border-radius: 6px !important;
+}}
+.stButton > button:hover,
+.stFormSubmitButton > button:hover {{
+    background-color: #0044cc !important;
+    border-color: #0044cc !important;
+    color: white !important;
+}}
+.stButton > button:active,
+.stFormSubmitButton > button:active {{
+    background-color: #002277 !important;
+}}
+</style>
+<div class="orientos-banner">
+  <img src="{_LOGO_SRC}" style="height:60px; max-width:320px;">
+</div>
+""", unsafe_allow_html=True)
 
 st.title("🇪🇺 CORDIS Project Analytics")
 st.caption("FP7 · H2020 · Horizon Europe — unified database")
