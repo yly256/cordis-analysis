@@ -109,29 +109,6 @@ except Exception as _boot_err:
 
 # ── Sidebar filters ────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown("""
-<div style="background:linear-gradient(135deg,#003399,#0066cc);
-            color:white;padding:12px 16px;border-radius:10px;
-            text-align:center;margin-bottom:8px;">
-  <div style="font-size:1.25em;font-weight:700;letter-spacing:.03em;">
-    &#x1F449; Start here
-  </div>
-  <div style="font-size:.82em;opacity:.88;margin-top:4px;">
-    Pick programmes, status &amp; years
-  </div>
-</div>
-<style>
-@keyframes cordis-pulse {
-  0%   { box-shadow: 0 0 0 0   rgba(0,102,204,.7); }
-  70%  { box-shadow: 0 0 0 10px rgba(0,102,204,0); }
-  100% { box-shadow: 0 0 0 0   rgba(0,102,204,0); }
-}
-section[data-testid="stSidebar"] > div:first-child > div:first-child > div:first-child {
-  animation: cordis-pulse 2s infinite;
-  border-radius: 10px;
-}
-</style>
-""", unsafe_allow_html=True)
     st.header("Filters")
 
     fps = con.execute(
@@ -140,7 +117,7 @@ section[data-testid="stSidebar"] > div:first-child > div:first-child > div:first
     sel_fp = st.multiselect("Framework Programme", fps, default=fps)
 
     statuses = con.execute(
-        "SELECT DISTINCT status FROM projects WHERE status IS NOT NULL ORDER BY 1"
+        "SELECT DISTINCT status FROM projects WHERE status IS NOT NULL AND status != '' ORDER BY 1"
     ).df()["status"].tolist()
     sel_status = st.multiselect("Status", statuses, default=statuses)
 
@@ -382,6 +359,26 @@ if "pending_run" in st.session_state:
     """, height=0)
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+@keyframes cordis-bounce {
+  0%, 100% { transform: translateY(0); }
+  50%       { transform: translateY(5px); }
+}
+.start-here-arrow {
+  display: inline-block;
+  animation: cordis-bounce 1.2s ease-in-out infinite;
+}
+</style>
+<div style="margin-bottom:4px;">
+  <span style="background:linear-gradient(135deg,#003399,#0066cc);
+               color:white;padding:5px 18px;border-radius:20px;
+               font-weight:600;font-size:.9em;letter-spacing:.02em;">
+    <span class="start-here-arrow">&#x1F447;</span>&nbsp; Choose a view to start exploring
+  </span>
+</div>
+""", unsafe_allow_html=True)
+
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "📊 Overview", "🔬 Deep Dive", "🌍 Geography",
     "💻 SQL", "🤖 AI Query", "📋 Query History / Log",
