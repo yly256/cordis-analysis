@@ -345,16 +345,19 @@ def _render_query_table(rows_df: pd.DataFrame, key_prefix: str, height: int = 32
 if "pending_run" in st.session_state:
     _components.html("""
         <script>
-        setTimeout(function () {
-            var tabs = window.parent.document.querySelectorAll('button[role="tab"]');
-            for (var i = 0; i < tabs.length; i++) {
-                if (tabs[i].textContent.includes('AI Query')) {
-                    tabs[i].click();
-                    window.parent.scrollTo({ top: 0, behavior: 'smooth' });
-                    break;
+        // Use double-rAF so the tab click lands after the first browser paint
+        requestAnimationFrame(function() {
+            requestAnimationFrame(function() {
+                var tabs = window.parent.document.querySelectorAll('button[role="tab"]');
+                for (var i = 0; i < tabs.length; i++) {
+                    if (tabs[i].textContent.includes('AI Query')) {
+                        tabs[i].click();
+                        window.parent.scrollTo({ top: 0, behavior: 'smooth' });
+                        break;
+                    }
                 }
-            }
-        }, 150);
+            });
+        });
         </script>
     """, height=0)
 
@@ -712,14 +715,17 @@ with tab5:
                         desc = _distill_description(question)
                         _save_query(desc, question, _sql_hash(sql), sql, summary)
 
-    # ── Last 10 recent queries ────────────────────────────────────────────────
+    # ── Last 10 recent queries (read-only) ───────────────────────────────────
     st.divider()
-    st.markdown("**Recent queries** — select and click ▶ Run to replay without an API call")
+    st.markdown("**Recent queries** — go to **Query History / Log** tab to replay a past query")
     if hcon is not None:
         last10 = pd.read_sql_query(
-            "SELECT * FROM query_log ORDER BY last_run_at DESC LIMIT 10", hcon
+            "SELECT description, question, run_count, last_run_at FROM query_log ORDER BY last_run_at DESC LIMIT 10", hcon
         )
-        _render_query_table(last10, "ai5", height=280)
+        if not last10.empty:
+            st.dataframe(last10, width="stretch", height=280, hide_index=True)
+        else:
+            st.caption("No queries run yet.")
     else:
         st.caption("Query history unavailable.")
 
