@@ -336,19 +336,19 @@ if "run_count" not in st.session_state:
     st.session_state.run_count = 0
 st.session_state.run_count += 1
 
-if st.session_state.run_count == 1:
-    st.markdown("""
+_badge_visible = "block" if st.session_state.run_count == 1 else "none"
+st.markdown(f"""
 <style>
-@keyframes cordis-bounce {
-  0%, 100% { transform: translateY(0); }
-  50%       { transform: translateY(5px); }
-}
-.start-here-arrow {
+@keyframes cordis-bounce {{
+  0%, 100% {{ transform: translateY(0); }}
+  50%       {{ transform: translateY(5px); }}
+}}
+.start-here-arrow {{
   display: inline-block;
   animation: cordis-bounce 1.2s ease-in-out infinite;
-}
+}}
 </style>
-<div style="margin-bottom:4px;">
+<div style="display:{_badge_visible};margin-bottom:4px;">
   <span style="background:linear-gradient(135deg,#003399,#0066cc);
                color:white;padding:5px 18px;border-radius:20px;
                font-weight:600;font-size:.9em;letter-spacing:.02em;">
