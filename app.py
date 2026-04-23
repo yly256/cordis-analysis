@@ -109,6 +109,29 @@ except Exception as _boot_err:
 
 # ── Sidebar filters ────────────────────────────────────────────────────────────
 with st.sidebar:
+    st.markdown("""
+<div style="background:linear-gradient(135deg,#003399,#0066cc);
+            color:white;padding:12px 16px;border-radius:10px;
+            text-align:center;margin-bottom:8px;">
+  <div style="font-size:1.25em;font-weight:700;letter-spacing:.03em;">
+    &#x1F449; Start here
+  </div>
+  <div style="font-size:.82em;opacity:.88;margin-top:4px;">
+    Pick programmes, status &amp; years
+  </div>
+</div>
+<style>
+@keyframes cordis-pulse {
+  0%   { box-shadow: 0 0 0 0   rgba(0,102,204,.7); }
+  70%  { box-shadow: 0 0 0 10px rgba(0,102,204,0); }
+  100% { box-shadow: 0 0 0 0   rgba(0,102,204,0); }
+}
+section[data-testid="stSidebar"] > div:first-child > div:first-child > div:first-child {
+  animation: cordis-pulse 2s infinite;
+  border-radius: 10px;
+}
+</style>
+""", unsafe_allow_html=True)
     st.header("Filters")
 
     fps = con.execute(
