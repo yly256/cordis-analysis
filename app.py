@@ -21,10 +21,15 @@ import streamlit.components.v1 as _components
 
 load_dotenv()
 
+print("[BOOT] imports OK")
+
 _APP_DIR  = Path(__file__).parent
 DB_PATH   = str(_APP_DIR / "cordis.duckdb")
 DB_URL    = "https://github.com/yly256/cordis-analysis/releases/download/v1.0/cordis.duckdb"
 HISTORY_DB = str(Path(tempfile.gettempdir()) / "query_history.db")
+
+print(f"[BOOT] DB_PATH   = {DB_PATH}  exists={Path(DB_PATH).exists()}")
+print(f"[BOOT] HISTORY_DB= {HISTORY_DB}")
 
 @st.cache_resource
 def _get_ai_client():
@@ -39,16 +44,22 @@ st.set_page_config(
 st.title("🇪🇺 CORDIS Project Analytics")
 st.caption("FP7 · H2020 · Horizon Europe — unified database")
 
+print("[BOOT] page config OK")
+
 if not Path(DB_PATH).exists():
+    print("[BOOT] cordis.duckdb missing — downloading…")
     with st.spinner("Downloading database (first run, ~145 MB)…"):
         urllib.request.urlretrieve(DB_URL, DB_PATH)
+    print("[BOOT] download complete")
 
 @st.cache_resource
 def get_con():
+    print(f"[DB] opening cordis.duckdb read-only from {DB_PATH}")
     return duckdb.connect(DB_PATH, read_only=True)
 
 @st.cache_resource
 def get_hcon():
+    print(f"[DB] opening history sqlite3 at {HISTORY_DB}")
     conn = sqlite3.connect(HISTORY_DB, check_same_thread=False)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS query_log (
@@ -64,15 +75,26 @@ def get_hcon():
         )
     """)
     conn.commit()
+    print("[DB] history db ready")
     return conn
 
+print("[BOOT] connecting to cordis.duckdb…")
 try:
     con = get_con()
+    print("[BOOT] cordis.duckdb connected")
 except Exception as e:
+    print(f"[BOOT ERROR] cordis.duckdb failed: {e}")
     st.error(f"Cannot open database: {e}\nRun `python ingest.py` first.")
     st.stop()
 
-hcon = get_hcon()
+print("[BOOT] connecting to history db…")
+try:
+    hcon = get_hcon()
+    print("[BOOT] history db connected")
+except Exception as e:
+    print(f"[BOOT ERROR] history db failed: {e}")
+    st.warning(f"Query history unavailable: {e}")
+    hcon = None
 
 # ── Sidebar filters ────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -245,6 +267,8 @@ def _sql_hash(sql: str) -> str:
 
 
 def _save_query(description: str, question: str, sql_hash: str, sql_text: str, summary: str):
+    if hcon is None:
+        return
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
     existing = pd.read_sql_query(
         "SELECT id, run_count FROM query_log WHERE sql_hash = ?",
@@ -655,20 +679,25 @@ with tab5:
     # ── Last 10 recent queries ────────────────────────────────────────────────
     st.divider()
     st.markdown("**Recent queries** — select and click ▶ Run to replay without an API call")
-    last10 = pd.read_sql_query(
-        "SELECT * FROM query_log ORDER BY last_run_at DESC LIMIT 10", hcon
-    )
-    _render_query_table(last10, "ai5", height=280)
+    if hcon is not None:
+        last10 = pd.read_sql_query(
+            "SELECT * FROM query_log ORDER BY last_run_at DESC LIMIT 10", hcon
+        )
+        _render_query_table(last10, "ai5", height=280)
+    else:
+        st.caption("Query history unavailable.")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab6:
     st.subheader("Query History / Log")
     st.caption("All unique queries ever run, sorted by popularity. Select one and click ▶ Run to replay — no API call needed.")
 
-    total = hcon.execute("SELECT COUNT(*) FROM query_log").fetchone()[0]
-    st.caption(f"{total} unique {'query' if total == 1 else 'queries'} on record.")
-
-    all_queries = pd.read_sql_query(
-        "SELECT * FROM query_log ORDER BY run_count DESC, last_run_at DESC", hcon
-    )
-    _render_query_table(all_queries, "h6", height=min(80 + total * 38, 520))
+    if hcon is None:
+        st.caption("Query history unavailable.")
+    else:
+        total = hcon.execute("SELECT COUNT(*) FROM query_log").fetchone()[0]
+        st.caption(f"{total} unique {'query' if total == 1 else 'queries'} on record.")
+        all_queries = pd.read_sql_query(
+            "SELECT * FROM query_log ORDER BY run_count DESC, last_run_at DESC", hcon
+        )
+        _render_query_table(all_queries, "h6", height=min(80 + total * 38, 520))
