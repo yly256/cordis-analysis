@@ -305,7 +305,7 @@ def _render_query_table(rows_df: pd.DataFrame, key_prefix: str, height: int = 32
         "Runs":        rows_df["run_count"].astype(int),
         "Last run":    rows_df["last_run_at"].str[:10],
     })
-    st.dataframe(disp, use_container_width=True, hide_index=True, height=height)
+    st.dataframe(disp, width="stretch", hide_index=True, height=height)
 
     options = [f"{i+1}. {row['description']}" for i, (_, row) in enumerate(rows_df.iterrows())]
     c1, c2 = st.columns([5, 1])
@@ -395,7 +395,7 @@ with tab1:
         st.plotly_chart(
             px.bar(df, x="FP", y="projects", color="FP",
                    text="projects", title="Project Count by FP"),
-            use_container_width=True
+            width="stretch"
         )
 
     with col2:
@@ -403,7 +403,7 @@ with tab1:
         st.plotly_chart(
             px.bar(df, x="FP", y="avg_budget_M", color="FP",
                    text="avg_budget_M", title="Avg Budget (€M) by FP"),
-            use_container_width=True
+            width="stretch"
         )
 
     col3, col4 = st.columns(2)
@@ -416,7 +416,7 @@ with tab1:
         st.plotly_chart(
             px.box(df2, x="FP", y="totalCost", log_y=True, color="FP",
                    title="Budget Distribution (log scale)"),
-            use_container_width=True
+            width="stretch"
         )
 
     with col4:
@@ -429,7 +429,7 @@ with tab1:
         st.plotly_chart(
             px.line(df3, x="year", y="n", color="FP",
                     title="Projects Started per Year"),
-            use_container_width=True
+            width="stretch"
         )
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -446,7 +446,7 @@ with tab2:
             px.histogram(df, x="partner_count", color="FP", nbins=40,
                          barmode="overlay", opacity=0.7,
                          title="Partner Count Distribution"),
-            use_container_width=True
+            width="stretch"
         )
 
     with col2:
@@ -458,7 +458,7 @@ with tab2:
             FROM projects WHERE {W()} AND partner_count > 0
             GROUP BY FP ORDER BY FP
         """).df()
-        st.dataframe(df2, use_container_width=True, hide_index=True)
+        st.dataframe(df2, width="stretch", hide_index=True)
 
     st.divider()
     st.subheader("Top 20 Funding Schemes by Project Count")
@@ -471,7 +471,7 @@ with tab2:
     st.plotly_chart(
         px.bar(df3, x="n", y="fundingScheme", color="FP", orientation="h",
                title="Top Funding Schemes"),
-        use_container_width=True
+        width="stretch"
     )
 
     st.divider()
@@ -485,7 +485,7 @@ with tab2:
         ORDER BY totalCost DESC
         LIMIT 100
     """).df()
-    st.dataframe(df4, use_container_width=True, hide_index=True)
+    st.dataframe(df4, width="stretch", hide_index=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab3:
@@ -504,7 +504,7 @@ with tab3:
             px.bar(df, x="projects", y="country", orientation="h",
                    color="avg_budget_M", color_continuous_scale="Blues",
                    title="Coordinator Country Ranking"),
-            use_container_width=True
+            width="stretch"
         )
 
     with col2:
@@ -513,7 +513,7 @@ with tab3:
             px.bar(df.sort_values("avg_budget_M", ascending=False).head(25),
                    x="avg_budget_M", y="country", orientation="h",
                    title="Avg Budget (€M) by Coordinator Country"),
-            use_container_width=True
+            width="stretch"
         )
 
     st.subheader("Country Participation Map")
@@ -542,7 +542,7 @@ with tab3:
         px.choropleth(map_df, locations="iso3", locationmode="ISO-3",
                       color="projects", color_continuous_scale="Blues",
                       scope="europe", title="Organisation Participation by Country"),
-        use_container_width=True
+        width="stretch"
     )
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -567,7 +567,7 @@ with tab4:
         try:
             result = con.execute(q).df()
             st.success(f"{len(result):,} rows returned")
-            st.dataframe(result, use_container_width=True, hide_index=True)
+            st.dataframe(result, width="stretch", hide_index=True)
             csv = result.to_csv(index=False)
             st.download_button("⬇ Download CSV", csv, "result.csv", "text/csv")
         except Exception as e:
@@ -629,7 +629,7 @@ with tab5:
             if result is not None:
                 _save_query(desc, question, _pending["hash"], sql, summary)
                 st.success(f"{len(result):,} rows returned")
-                st.dataframe(result, use_container_width=True, hide_index=True)
+                st.dataframe(result, width="stretch", hide_index=True)
                 st.download_button("⬇ Download CSV", result.to_csv(index=False),
                                    "ai_query_result.csv", "text/csv")
                 st.info(summary)
@@ -668,7 +668,7 @@ with tab5:
 
                 if result is not None:
                     st.success(f"{len(result):,} rows returned")
-                    st.dataframe(result, use_container_width=True, hide_index=True)
+                    st.dataframe(result, width="stretch", hide_index=True)
                     st.download_button("⬇ Download CSV", result.to_csv(index=False),
                                        "ai_query_result.csv", "text/csv")
                     with st.spinner("Summarising…"):
