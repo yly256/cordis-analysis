@@ -27,10 +27,6 @@ DB_URL    = "https://github.com/yly256/cordis-analysis/releases/download/v1.0/co
 # Use /tmp so DuckDB can create WAL/lock files; _APP_DIR may be a network mount on Streamlit Cloud
 HISTORY_DB = str(Path("/tmp") / "query_history.duckdb")
 
-if not Path(DB_PATH).exists():
-    with st.spinner("Downloading database (first run, ~145 MB)…"):
-        urllib.request.urlretrieve(DB_URL, DB_PATH)
-
 st.set_page_config(
     page_title="CORDIS Analytics",
     page_icon="🇪🇺",
@@ -39,6 +35,10 @@ st.set_page_config(
 
 st.title("🇪🇺 CORDIS Project Analytics")
 st.caption("FP7 · H2020 · Horizon Europe — unified database")
+
+if not Path(DB_PATH).exists():
+    with st.spinner("Downloading database (first run, ~145 MB)…"):
+        urllib.request.urlretrieve(DB_URL, DB_PATH)
 
 @st.cache_resource
 def get_con():
