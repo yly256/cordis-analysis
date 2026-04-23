@@ -5,7 +5,7 @@ Run: streamlit run app.py
 
 import os
 import re
-import json
+import sqlite3
 import hashlib
 from datetime import datetime
 import streamlit as st
@@ -19,13 +19,15 @@ from dotenv import load_dotenv
 import streamlit.components.v1 as _components
 
 load_dotenv()
-_ai_client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
 
 _APP_DIR  = Path(__file__).parent
 DB_PATH   = str(_APP_DIR / "cordis.duckdb")
 DB_URL    = "https://github.com/yly256/cordis-analysis/releases/download/v1.0/cordis.duckdb"
-# Use /tmp so DuckDB can create WAL/lock files; _APP_DIR may be a network mount on Streamlit Cloud
-HISTORY_DB = str(Path("/tmp") / "query_history.duckdb")
+HISTORY_DB = "/tmp/query_history.db"
+
+@st.cache_resource
+def _get_ai_client():
+    return anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
 
 st.set_page_config(
     page_title="CORDIS Analytics",
@@ -46,21 +48,22 @@ def get_con():
 
 @st.cache_resource
 def get_hcon():
-    hcon = duckdb.connect(HISTORY_DB)
-    hcon.execute("""
+    conn = sqlite3.connect(HISTORY_DB, check_same_thread=False)
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS query_log (
-            id           INTEGER,
-            description  VARCHAR,
-            question     VARCHAR,
-            sql_hash     VARCHAR,
-            sql_text     VARCHAR,
-            summary      VARCHAR,
+            id           INTEGER PRIMARY KEY,
+            description  TEXT,
+            question     TEXT,
+            sql_hash     TEXT,
+            sql_text     TEXT,
+            summary      TEXT,
             run_count    INTEGER DEFAULT 1,
-            first_run_at VARCHAR,
-            last_run_at  VARCHAR
+            first_run_at TEXT,
+            last_run_at  TEXT
         )
     """)
-    return hcon
+    conn.commit()
+    return conn
 
 try:
     con = get_con()
@@ -177,7 +180,7 @@ _SQL_SYSTEM = (
 )
 
 def _generate_sql(question: str, where_clause: str) -> str:
-    resp = _ai_client.messages.create(
+    resp = _get_ai_client().messages.create(
         model="claude-sonnet-4-6",
         max_tokens=600,
         system=_SQL_SYSTEM.format(schema=_build_schema_context(), where_clause=where_clause),
@@ -187,7 +190,7 @@ def _generate_sql(question: str, where_clause: str) -> str:
 
 
 def _fix_sql(question: str, bad_sql: str, error: str, where_clause: str) -> str:
-    resp = _ai_client.messages.create(
+    resp = _get_ai_client().messages.create(
         model="claude-sonnet-4-6",
         max_tokens=600,
         system=_SQL_SYSTEM.format(schema=_build_schema_context(), where_clause=where_clause),
@@ -205,7 +208,7 @@ def _fix_sql(question: str, bad_sql: str, error: str, where_clause: str) -> str:
 
 def _summarize(question: str, df) -> str:
     sample = df.head(15).to_string(index=False)
-    resp = _ai_client.messages.create(
+    resp = _get_ai_client().messages.create(
         model="claude-sonnet-4-6",
         max_tokens=250,
         system=(
@@ -221,7 +224,7 @@ def _summarize(question: str, df) -> str:
 
 
 def _distill_description(question: str) -> str:
-    resp = _ai_client.messages.create(
+    resp = _get_ai_client().messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=20,
         system=(
@@ -242,22 +245,24 @@ def _sql_hash(sql: str) -> str:
 
 def _save_query(description: str, question: str, sql_hash: str, sql_text: str, summary: str):
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
-    existing = hcon.execute(
-        "SELECT id, run_count FROM query_log WHERE sql_hash = ?", [sql_hash]
-    ).df()
+    existing = pd.read_sql_query(
+        "SELECT id, run_count FROM query_log WHERE sql_hash = ?",
+        hcon, params=(sql_hash,)
+    )
     if not existing.empty:
         row_id = int(existing.iloc[0]["id"])
         new_count = int(existing.iloc[0]["run_count"]) + 1
         hcon.execute(
             "UPDATE query_log SET run_count=?, last_run_at=?, summary=? WHERE id=?",
-            [new_count, now, summary, row_id],
+            (new_count, now, summary, row_id),
         )
     else:
         new_id = hcon.execute("SELECT COALESCE(MAX(id),0)+1 FROM query_log").fetchone()[0]
         hcon.execute(
             "INSERT INTO query_log VALUES (?,?,?,?,?,?,1,?,?)",
-            [new_id, description, question, sql_hash, sql_text, summary, now, now],
+            (new_id, description, question, sql_hash, sql_text, summary, now, now),
         )
+    hcon.commit()
 
 
 def _render_query_table(rows_df: pd.DataFrame, key_prefix: str, height: int = 320):
@@ -649,9 +654,9 @@ with tab5:
     # ── Last 10 recent queries ────────────────────────────────────────────────
     st.divider()
     st.markdown("**Recent queries** — select and click ▶ Run to replay without an API call")
-    last10 = hcon.execute(
-        "SELECT * FROM query_log ORDER BY last_run_at DESC LIMIT 10"
-    ).df()
+    last10 = pd.read_sql_query(
+        "SELECT * FROM query_log ORDER BY last_run_at DESC LIMIT 10", hcon
+    )
     _render_query_table(last10, "ai5", height=280)
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -662,7 +667,7 @@ with tab6:
     total = hcon.execute("SELECT COUNT(*) FROM query_log").fetchone()[0]
     st.caption(f"{total} unique {'query' if total == 1 else 'queries'} on record.")
 
-    all_queries = hcon.execute(
-        "SELECT * FROM query_log ORDER BY run_count DESC, last_run_at DESC"
-    ).df()
+    all_queries = pd.read_sql_query(
+        "SELECT * FROM query_log ORDER BY run_count DESC, last_run_at DESC", hcon
+    )
     _render_query_table(all_queries, "h6", height=min(80 + total * 38, 520))
