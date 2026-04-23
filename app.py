@@ -317,15 +317,6 @@ def _render_query_table(rows_df: pd.DataFrame, key_prefix: str, height: int = 32
     st.dataframe(disp, width="stretch", hide_index=True, height=height)
 
     options = [f"{i+1}. {row['description']}" for i, (_, row) in enumerate(rows_df.iterrows())]
-    c1, c2 = st.columns([5, 1])
-    sel_idx = c1.selectbox(
-        "Select", range(len(options)),
-        format_func=lambda i: options[i],
-        label_visibility="collapsed",
-        key=f"{key_prefix}_sel",
-    )
-    sel = rows_df.iloc[sel_idx]
-
     with st.form(key=f"{key_prefix}_form"):
         fc1, fc2 = st.columns([5, 1])
         sel_idx = fc1.selectbox(
