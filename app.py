@@ -3,12 +3,23 @@ CORDIS Analytics Dashboard
 Run: streamlit run app.py
 """
 
+import os
+import re
+import json
+import hashlib
+from datetime import datetime
 import streamlit as st
 import duckdb
 import pandas as pd
 import plotly.express as px
 import urllib.request
 from pathlib import Path
+import anthropic
+from dotenv import load_dotenv
+import streamlit.components.v1 as _components
+
+load_dotenv()
+_ai_client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
 
 DB_PATH = "cordis.duckdb"
 DB_URL = "https://github.com/yly256/cordis-analysis/releases/download/v1.0/cordis.duckdb"
@@ -27,15 +38,37 @@ st.set_page_config(
 st.title("🇪🇺 CORDIS Project Analytics")
 st.caption("FP7 · H2020 · Horizon Europe — unified database")
 
+HISTORY_DB = "query_history.duckdb"
+
 @st.cache_resource
 def get_con():
     return duckdb.connect(DB_PATH, read_only=True)
+
+@st.cache_resource
+def get_hcon():
+    hcon = duckdb.connect(HISTORY_DB)
+    hcon.execute("""
+        CREATE TABLE IF NOT EXISTS query_log (
+            id           INTEGER,
+            description  VARCHAR,
+            question     VARCHAR,
+            sql_hash     VARCHAR,
+            sql_text     VARCHAR,
+            summary      VARCHAR,
+            run_count    INTEGER DEFAULT 1,
+            first_run_at VARCHAR,
+            last_run_at  VARCHAR
+        )
+    """)
+    return hcon
 
 try:
     con = get_con()
 except Exception as e:
     st.error(f"Cannot open database: {e}\nRun `python ingest.py` first.")
     st.stop()
+
+hcon = get_hcon()
 
 # ── Sidebar filters ────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -81,8 +114,214 @@ def W():
     clauses.append(f"YEAR(startDate) BETWEEN {year_range[0]} AND {year_range[1]}")
     return " AND ".join(clauses) if clauses else "1=1"
 
+# ── AI Query helpers ───────────────────────────────────────────────────────────
+@st.cache_resource
+def _build_schema_context():
+    """Read actual column names from DuckDB so the prompt is always accurate."""
+    tables = ["projects", "organizations", "topics", "legal_basis", "euro_sci_voc", "policy_priorities"]
+    lines = ["Tables in the CORDIS DuckDB database:\n"]
+    for t in tables:
+        try:
+            cols = con.execute(f"DESCRIBE {t}").df()
+            col_list = ", ".join(
+                f"{r['column_name']} ({r['column_type']})" for _, r in cols.iterrows()
+            )
+            lines.append(f"  {t}: {col_list}")
+        except Exception:
+            pass
+    return "\n".join(lines)
+
+_INJECTION_PATTERNS = [
+    # SQL mutations
+    r"\b(drop|delete|insert|update|truncate|alter|create|replace)\b",
+    # Prompt injection
+    r"ignore (previous|all|your) (instructions?|rules?|prompt)",
+    r"you are now",
+    r"forget (everything|all|your)",
+    r"new (role|persona|instructions?)",
+    r"system\s*prompt",
+    r"disregard",
+]
+
+def _check_relevance(question: str) -> dict:
+    """Returns {"relevant": bool, "reason": str}. Uses regex — no LLM call."""
+    q = question.strip().lower()
+    if len(q) < 3:
+        return {"relevant": False, "reason": "Question is too short."}
+    for pattern in _INJECTION_PATTERNS:
+        if re.search(pattern, q):
+            return {"relevant": False, "reason": "Input contains disallowed patterns."}
+    return {"relevant": True, "reason": "ok"}
+
+
+_SQL_SYSTEM = (
+    "You are a DuckDB SQL expert for a CORDIS EU research-funding database.\n"
+    "Schema:\n{schema}\n"
+    "Active sidebar filters (MUST be applied to the projects table): {where_clause}\n"
+    "Rules:\n"
+    "- Return ONLY the raw SQL query — no markdown fences, no explanation.\n"
+    "- Always apply the filter above. If you use a table alias for projects (e.g. FROM projects p), "
+    "qualify every filter column with that alias (e.g. p.FP, p.status, p.startDate).\n"
+    "- Use ROUND(x/1e6, 2) for EUR millions. Limit to 100 rows unless asked otherwise.\n"
+    "- Use YEAR(startDate) for year extraction. SELECT only — no mutations.\n"
+    "- COUNTRY PARTICIPATION: when counting projects per country, always count ALL projects "
+    "where that country appears in ANY role (coordinator or participant). Do this by joining "
+    "the organizations table and counting DISTINCT projectIDs, e.g.: "
+    "SELECT o.country, COUNT(DISTINCT p.projectID) AS projects, ROUND(SUM(p.totalCost)/1e6,2) AS total_funding_M "
+    "FROM projects p JOIN organizations o ON p.projectID = o.projectID "
+    "WHERE <filters on p> AND o.country IS NOT NULL "
+    "GROUP BY o.country ORDER BY projects DESC. "
+    "Only use coordinator_country when the user explicitly asks about coordinators only.\n"
+    "- NULL COUNTRIES: always exclude rows where the country/coordinator_country column IS NULL "
+    "by adding the appropriate IS NOT NULL filter."
+)
+
+def _generate_sql(question: str, where_clause: str) -> str:
+    resp = _ai_client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=600,
+        system=_SQL_SYSTEM.format(schema=_build_schema_context(), where_clause=where_clause),
+        messages=[{"role": "user", "content": question}],
+    )
+    return resp.content[0].text.strip()
+
+
+def _fix_sql(question: str, bad_sql: str, error: str, where_clause: str) -> str:
+    resp = _ai_client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=600,
+        system=_SQL_SYSTEM.format(schema=_build_schema_context(), where_clause=where_clause),
+        messages=[
+            {"role": "user", "content": question},
+            {"role": "assistant", "content": bad_sql},
+            {"role": "user", "content": (
+                f"That query failed with: {error}\n"
+                "Please fix it and return only the corrected SQL."
+            )},
+        ],
+    )
+    return resp.content[0].text.strip()
+
+
+def _summarize(question: str, df) -> str:
+    sample = df.head(15).to_string(index=False)
+    resp = _ai_client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=250,
+        system=(
+            "You are a research-funding analyst. Write a concise 2-3 sentence summary "
+            "of the query results. Be specific with numbers and country/scheme names."
+        ),
+        messages=[{"role": "user", "content": (
+            f"Question: {question}\n\n"
+            f"Results ({len(df)} rows, showing up to 15):\n{sample}"
+        )}],
+    )
+    return resp.content[0].text.strip()
+
+
+def _distill_description(question: str) -> str:
+    resp = _ai_client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=20,
+        system=(
+            "Summarize this EU research data question in 5–7 words. "
+            "No punctuation at the end. "
+            "Never include value judgements such as high, low, good, bad, strong, weak — "
+            "describe only what is being measured, not the result."
+        ),
+        messages=[{"role": "user", "content": question}],
+    )
+    return resp.content[0].text.strip()
+
+
+def _sql_hash(sql: str) -> str:
+    normalized = re.sub(r"\s+", " ", sql.strip().lower().rstrip(";"))
+    return hashlib.sha256(normalized.encode()).hexdigest()[:12]
+
+
+def _save_query(description: str, question: str, sql_hash: str, sql_text: str, summary: str):
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+    existing = hcon.execute(
+        "SELECT id, run_count FROM query_log WHERE sql_hash = ?", [sql_hash]
+    ).df()
+    if not existing.empty:
+        row_id = int(existing.iloc[0]["id"])
+        new_count = int(existing.iloc[0]["run_count"]) + 1
+        hcon.execute(
+            "UPDATE query_log SET run_count=?, last_run_at=?, summary=? WHERE id=?",
+            [new_count, now, summary, row_id],
+        )
+    else:
+        new_id = hcon.execute("SELECT COALESCE(MAX(id),0)+1 FROM query_log").fetchone()[0]
+        hcon.execute(
+            "INSERT INTO query_log VALUES (?,?,?,?,?,?,1,?,?)",
+            [new_id, description, question, sql_hash, sql_text, summary, now, now],
+        )
+
+
+def _render_query_table(rows_df: pd.DataFrame, key_prefix: str, height: int = 320):
+    """Compact scrollable table + selectbox to pick and run a query."""
+    if rows_df.empty:
+        st.caption("No queries recorded yet.")
+        return
+
+    disp = pd.DataFrame({
+        "#":           range(1, len(rows_df) + 1),
+        "Description": rows_df["description"].str[:35],
+        "Question":    rows_df["question"].str[:60],
+        "Runs":        rows_df["run_count"].astype(int),
+        "Last run":    rows_df["last_run_at"].str[:10],
+    })
+    st.dataframe(disp, use_container_width=True, hide_index=True, height=height)
+
+    options = [f"{i+1}. {row['description']}" for i, (_, row) in enumerate(rows_df.iterrows())]
+    c1, c2 = st.columns([5, 1])
+    sel_idx = c1.selectbox(
+        "Select", range(len(options)),
+        format_func=lambda i: options[i],
+        label_visibility="collapsed",
+        key=f"{key_prefix}_sel",
+    )
+    sel = rows_df.iloc[sel_idx]
+
+    if c2.button("▶ Run", key=f"{key_prefix}_run"):
+        st.session_state["pending_run"] = {
+            "question":    sel["question"],
+            "sql":         sel["sql_text"],
+            "hash":        sel["sql_hash"],
+            "desc":        sel["description"],
+            "summary":     sel["summary"],
+            "last_run_at": sel["last_run_at"],
+        }
+        st.rerun()
+
+    with st.expander("Summary for selected query"):
+        st.write(sel["summary"])
+
+
+# ── Auto-switch to AI Query tab when a history run is pending ──────────────────
+if "pending_run" in st.session_state:
+    _components.html("""
+        <script>
+        setTimeout(function () {
+            var tabs = window.parent.document.querySelectorAll('button[role="tab"]');
+            for (var i = 0; i < tabs.length; i++) {
+                if (tabs[i].textContent.includes('AI Query')) {
+                    tabs[i].click();
+                    window.parent.scrollTo({ top: 0, behavior: 'smooth' });
+                    break;
+                }
+            }
+        }, 150);
+        </script>
+    """, height=0)
+
 # ── Tabs ───────────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4 = st.tabs(["📊 Overview", "🔬 Deep Dive", "🌍 Geography", "💻 SQL"])
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    "📊 Overview", "🔬 Deep Dive", "🌍 Geography",
+    "💻 SQL", "🤖 AI Query", "📋 Query History / Log",
+])
 
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab1:
@@ -301,3 +540,129 @@ with tab4:
             st.download_button("⬇ Download CSV", csv, "result.csv", "text/csv")
         except Exception as e:
             st.error(f"SQL error: {e}")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab5:
+    st.subheader("Ask a Question in Plain English")
+    st.caption(
+        "Claude translates your question into SQL, runs it, and summarises the results. "
+        "Sidebar filters apply automatically."
+    )
+
+    # ── Pre-fill from history Run button ──────────────────────────────────────
+    _pending = st.session_state.pop("pending_run", None)
+    _prefill_q = _pending["question"] if _pending else ""
+
+    question = st.text_input(
+        "Your question",
+        value=_prefill_q,
+        placeholder="e.g. Which countries received the most Horizon Europe funding?",
+    )
+
+    ask_clicked = st.button("Ask Claude")
+    _auto_run   = _pending is not None   # triggered by a history Run button
+
+    if (ask_clicked or _auto_run) and question.strip():
+        # ── If coming from history, use cached SQL — unless it's stale (>30 days) ──
+        if _auto_run and _pending:
+            st.toast("Query run from history — results below in the AI Query tab", icon="✅")
+            summary = _pending["summary"]
+            desc    = _pending["desc"]
+
+            _last_run = _pending.get("last_run_at", "")
+            try:
+                _days_old = (datetime.utcnow() - datetime.strptime(_last_run, "%Y-%m-%d %H:%M")).days
+            except Exception:
+                _days_old = 999
+
+            if _days_old > 30:
+                with st.spinner(f"SQL is {_days_old} days old — regenerating…"):
+                    sql = _generate_sql(question, W())
+                with st.expander("Regenerated SQL", expanded=False):
+                    st.code(sql, language="sql")
+            else:
+                sql = _pending["sql"]
+                with st.expander("SQL (from history)", expanded=False):
+                    st.code(sql, language="sql")
+            with st.spinner("Running query…"):
+                try:
+                    result = con.execute(sql).df()
+                except Exception as e:
+                    st.info(
+                        "Sorry, the cached query failed against the current data. "
+                        "Try typing the question again to regenerate SQL.\n\n"
+                        f"_Technical detail: {e}_"
+                    )
+                    result = None
+            if result is not None:
+                _save_query(desc, question, _pending["hash"], sql, summary)
+                st.success(f"{len(result):,} rows returned")
+                st.dataframe(result, use_container_width=True, hide_index=True)
+                st.download_button("⬇ Download CSV", result.to_csv(index=False),
+                                   "ai_query_result.csv", "text/csv")
+                st.info(summary)
+        else:
+            # ── Normal typed query path ───────────────────────────────────────
+            guard = _check_relevance(question)
+            if not guard.get("relevant", False):
+                st.warning(
+                    f"That question doesn't seem related to CORDIS data — "
+                    f"{guard.get('reason', 'please ask about EU research projects, budgets, or organisations.')} "
+                    "Try rephrasing."
+                )
+            else:
+                with st.spinner("Generating SQL…"):
+                    sql = _generate_sql(question, W())
+                with st.expander("Generated SQL", expanded=False):
+                    st.code(sql, language="sql")
+
+                result = None
+                with st.spinner("Running query…"):
+                    try:
+                        result = con.execute(sql).df()
+                    except Exception as e:
+                        with st.spinner("Fixing query…"):
+                            sql = _fix_sql(question, sql, str(e), W())
+                        with st.expander("Corrected SQL", expanded=False):
+                            st.code(sql, language="sql")
+                        try:
+                            result = con.execute(sql).df()
+                        except Exception as e2:
+                            st.info(
+                                "Sorry, I wasn't able to generate a working query for that question. "
+                                "Try rephrasing, or use the SQL tab for full control.\n\n"
+                                f"_Technical detail: {e2}_"
+                            )
+
+                if result is not None:
+                    st.success(f"{len(result):,} rows returned")
+                    st.dataframe(result, use_container_width=True, hide_index=True)
+                    st.download_button("⬇ Download CSV", result.to_csv(index=False),
+                                       "ai_query_result.csv", "text/csv")
+                    with st.spinner("Summarising…"):
+                        summary = _summarize(question, result)
+                    st.info(summary)
+                    with st.spinner("Saving to history…"):
+                        desc = _distill_description(question)
+                        _save_query(desc, question, _sql_hash(sql), sql, summary)
+
+    # ── Last 10 recent queries ────────────────────────────────────────────────
+    st.divider()
+    st.markdown("**Recent queries** — select and click ▶ Run to replay without an API call")
+    last10 = hcon.execute(
+        "SELECT * FROM query_log ORDER BY last_run_at DESC LIMIT 10"
+    ).df()
+    _render_query_table(last10, "ai5", height=280)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab6:
+    st.subheader("Query History / Log")
+    st.caption("All unique queries ever run, sorted by popularity. Select one and click ▶ Run to replay — no API call needed.")
+
+    total = hcon.execute("SELECT COUNT(*) FROM query_log").fetchone()[0]
+    st.caption(f"{total} unique {'query' if total == 1 else 'queries'} on record.")
+
+    all_queries = hcon.execute(
+        "SELECT * FROM query_log ORDER BY run_count DESC, last_run_at DESC"
+    ).df()
+    _render_query_table(all_queries, "h6", height=min(80 + total * 38, 520))
