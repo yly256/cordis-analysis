@@ -46,55 +46,57 @@ st.caption("FP7 · H2020 · Horizon Europe — unified database")
 
 print("[BOOT] page config OK")
 
-if not Path(DB_PATH).exists():
-    print("[BOOT] cordis.duckdb missing — downloading…")
-    with st.spinner("Downloading database (first run, ~145 MB)…"):
-        urllib.request.urlretrieve(DB_URL, DB_PATH)
-    print("[BOOT] download complete")
-
-@st.cache_resource
-def get_con():
-    print(f"[DB] opening cordis.duckdb read-only from {DB_PATH}")
-    return duckdb.connect(DB_PATH, read_only=True)
-
-@st.cache_resource
-def get_hcon():
-    print(f"[DB] opening history sqlite3 at {HISTORY_DB}")
-    conn = sqlite3.connect(HISTORY_DB, check_same_thread=False)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS query_log (
-            id           INTEGER PRIMARY KEY,
-            description  TEXT,
-            question     TEXT,
-            sql_hash     TEXT,
-            sql_text     TEXT,
-            summary      TEXT,
-            run_count    INTEGER DEFAULT 1,
-            first_run_at TEXT,
-            last_run_at  TEXT
-        )
-    """)
-    conn.commit()
-    print("[DB] history db ready")
-    return conn
-
-print("[BOOT] connecting to cordis.duckdb…")
 try:
+    if not Path(DB_PATH).exists():
+        print("[BOOT] cordis.duckdb missing — downloading…")
+        with st.spinner("Downloading database (first run, ~145 MB)…"):
+            urllib.request.urlretrieve(DB_URL, DB_PATH)
+        print("[BOOT] download complete")
+
+    @st.cache_resource
+    def get_con():
+        print(f"[DB] opening cordis.duckdb read-only from {DB_PATH}")
+        return duckdb.connect(DB_PATH, read_only=True)
+
+    @st.cache_resource
+    def get_hcon():
+        print(f"[DB] opening history sqlite3 at {HISTORY_DB}")
+        conn = sqlite3.connect(HISTORY_DB, check_same_thread=False)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS query_log (
+                id           INTEGER PRIMARY KEY,
+                description  TEXT,
+                question     TEXT,
+                sql_hash     TEXT,
+                sql_text     TEXT,
+                summary      TEXT,
+                run_count    INTEGER DEFAULT 1,
+                first_run_at TEXT,
+                last_run_at  TEXT
+            )
+        """)
+        conn.commit()
+        print("[DB] history db ready")
+        return conn
+
+    print("[BOOT] connecting to cordis.duckdb…")
     con = get_con()
     print("[BOOT] cordis.duckdb connected")
-except Exception as e:
-    print(f"[BOOT ERROR] cordis.duckdb failed: {e}")
-    st.error(f"Cannot open database: {e}\nRun `python ingest.py` first.")
-    st.stop()
 
-print("[BOOT] connecting to history db…")
-try:
-    hcon = get_hcon()
-    print("[BOOT] history db connected")
-except Exception as e:
-    print(f"[BOOT ERROR] history db failed: {e}")
-    st.warning(f"Query history unavailable: {e}")
-    hcon = None
+    print("[BOOT] connecting to history db…")
+    try:
+        hcon = get_hcon()
+        print("[BOOT] history db connected")
+    except Exception as e:
+        print(f"[BOOT WARNING] history db failed: {e}")
+        st.warning(f"Query history unavailable: {e}")
+        hcon = None
+
+except Exception as _boot_err:
+    import traceback
+    st.error("### Startup error — please share this with the developer")
+    st.code(traceback.format_exc())
+    st.stop()
 
 # ── Sidebar filters ────────────────────────────────────────────────────────────
 with st.sidebar:
