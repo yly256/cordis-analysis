@@ -692,7 +692,6 @@ with tab6:
         _render_query_table(all_queries, "h6", height=min(80 + total * 38, 520))
         _h6_rd = st.session_state.pop("_h6_run_data", None)
         if _h6_rd:
-            st.info("Results below — switch to **AI Query** tab to ask follow-up questions with AI.")
             with st.spinner("Running query…"):
                 try:
                     _r = con.execute(_h6_rd["sql_text"]).df()
