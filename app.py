@@ -33,9 +33,14 @@ print(f"[BOOT] HISTORY_DB= {HISTORY_DB}")
 
 @st.cache_resource
 def _get_ai_client():
-    key = st.secrets.get("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY", "")
+    key = os.getenv("ANTHROPIC_API_KEY", "")
     if not key:
-        st.error("ANTHROPIC_API_KEY is not set. Add it in Streamlit Cloud → Settings → Secrets.")
+        try:
+            key = st.secrets["ANTHROPIC_API_KEY"]
+        except Exception:
+            pass
+    if not key:
+        st.error("ANTHROPIC_API_KEY not found. Add it in Streamlit Cloud → Settings → Secrets.")
         st.stop()
     return anthropic.Anthropic(api_key=key)
 
