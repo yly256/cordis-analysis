@@ -596,7 +596,12 @@ with tab3:
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab4:
     st.subheader("Ad-hoc SQL Query")
-    st.caption("Tables: `projects`, `organizations`, `topics`, `legal_basis`, `euro_sci_voc`, `policy_priorities`")
+    st.markdown(
+        "<p style='font-size:0.95em;color:#003399;font-weight:600;margin-bottom:0.5rem;'>"
+        "Tables: <code>projects</code> · <code>organizations</code> · <code>topics</code> · "
+        "<code>legal_basis</code> · <code>euro_sci_voc</code> · <code>policy_priorities</code></p>",
+        unsafe_allow_html=True,
+    )
 
     example_queries = {
         "Avg budget & partners by FP": f"SELECT FP, COUNT(*) AS n, ROUND(AVG(totalCost)/1e6,2) AS avg_M, ROUND(AVG(partner_count),1) AS avg_partners FROM projects WHERE {W()} GROUP BY FP",
@@ -624,9 +629,13 @@ with tab4:
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab5:
     st.subheader("Ask a Question in Plain English")
-    st.caption(
+    st.markdown(
+        "<p style='font-size:0.95em;color:#003399;font-weight:600;margin-bottom:0.2rem;'>"
         "Claude translates your question into SQL, runs it, and summarises the results. "
-        "Sidebar filters apply automatically."
+        "Sidebar filters apply automatically.</p>"
+        "<p style='font-size:0.82em;color:#555;margin-top:0;'>"
+        "Note: successful queries are saved for future use by you or others — no other tracking is made.</p>",
+        unsafe_allow_html=True,
     )
 
     question = st.text_input(
@@ -735,7 +744,12 @@ with tab5:
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab6:
     st.subheader("Query History / Log")
-    st.caption("All unique queries ever run, sorted by popularity. Select one and click ▶ Run to replay — no API call needed.")
+    st.markdown(
+        "<p style='font-size:0.95em;color:#003399;font-weight:600;margin-bottom:0.5rem;'>"
+        "All unique queries ever run, sorted by popularity. "
+        "Select one and click ▶ Run to replay — no API call needed.</p>",
+        unsafe_allow_html=True,
+    )
 
     if hcon is None:
         st.caption("Query history unavailable.")
