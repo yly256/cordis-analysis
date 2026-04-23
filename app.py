@@ -33,7 +33,11 @@ print(f"[BOOT] HISTORY_DB= {HISTORY_DB}")
 
 @st.cache_resource
 def _get_ai_client():
-    return anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
+    key = st.secrets.get("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY", "")
+    if not key:
+        st.error("ANTHROPIC_API_KEY is not set. Add it in Streamlit Cloud → Settings → Secrets.")
+        st.stop()
+    return anthropic.Anthropic(api_key=key)
 
 st.set_page_config(
     page_title="CORDIS Analytics",
