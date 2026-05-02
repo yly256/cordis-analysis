@@ -4,7 +4,8 @@ Reads FP7 / H2020 / HORIZON JSON zips → builds cordis.duckdb
 Run: python ingest.py
 """
 
-import zipfile, json, os
+import zipfile, json, os, urllib.request
+from datetime import date as _date
 from pathlib import Path
 import duckdb
 import pandas as pd
@@ -17,6 +18,36 @@ FP_MAP = {
     "h2020":   "H2020",
     "horizon": "HEU",
 }
+
+_CORDIS_DATASETS = {
+    "FP7":  "cordisfp7projects",
+    "H2020": "cordish2020projects",
+    "HEU":  "cordis-eu-research-projects-under-horizon-europe-2021-2027",
+}
+
+def _fetch_source_date(dataset_id: str) -> str:
+    """Return the most recent dct:modified date from the EU Open Data Portal API."""
+    url = f"https://data.europa.eu/api/hub/repo/datasets/{dataset_id}"
+    try:
+        with urllib.request.urlopen(url, timeout=15) as resp:
+            data = json.loads(resp.read())
+    except Exception:
+        return ""
+    def collect(obj):
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if "modified" in k.lower():
+                    for item in (v if isinstance(v, list) else [v]):
+                        val = item.get("@value", item) if isinstance(item, dict) else item
+                        if isinstance(val, str) and len(val) >= 10:
+                            yield val[:10]
+                else:
+                    yield from collect(v)
+        elif isinstance(obj, list):
+            for item in obj:
+                yield from collect(item)
+    dates = list(collect(data))
+    return max(dates) if dates else ""
 
 def detect_fp(zip_name: str) -> str:
     z = zip_name.lower()
@@ -216,6 +247,18 @@ def main():
         FROM projects
         GROUP BY FP ORDER BY FP
     """).df().to_string(index=False))
+
+    # ── Write meta table ──────────────────────────────────────────────────────
+    print("\nFetching CORDIS source dates from EU Open Data Portal…")
+    ingested_at = _date.today().isoformat()
+    meta_rows = []
+    for fp, dataset_id in _CORDIS_DATASETS.items():
+        d = _fetch_source_date(dataset_id)
+        meta_rows.append({"programme": fp, "source_api_modified": d, "ingested_at": ingested_at})
+        print(f"  {fp}: source_api_modified = {d or '(not found)'}")
+    meta_df = pd.DataFrame(meta_rows)
+    con.execute("CREATE TABLE meta AS SELECT * FROM meta_df")
+    print("  meta table written")
 
     con.close()
     print(f"\n✓ Done. Database → {DB_PATH}")
