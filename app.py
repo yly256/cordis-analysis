@@ -647,7 +647,7 @@ with tab5:
         "Claude translates your question into SQL, runs it, and summarises the results. "
         "Sidebar filters apply automatically.</p>"
         "<p style='font-size:0.82em;color:#555;margin-top:0;'>"
-        "Note: successful queries are saved for future use by you or others — no other tracking is made.</p>",
+        "Note: successful queries are saved temporarily for reuse — history may be cleared after a period of inactivity. No other tracking is made.</p>",
         unsafe_allow_html=True,
     )
 
