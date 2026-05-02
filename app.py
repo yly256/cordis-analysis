@@ -190,6 +190,13 @@ with st.sidebar:
     ).df()["fundingScheme"].tolist()
     sel_scheme = st.multiselect("Funding Scheme", schemes, default=[])
 
+    st.divider()
+    st.markdown(
+        "<p style='font-size:0.78em;color:#555;margin-bottom:2px;'><b>CORDIS data as of</b></p>"
+        "<p style='font-size:0.75em;color:#777;margin:0;'>FP7: Dec 2018 · H2020: Jan 2022 · HEU: Jun 2023</p>",
+        unsafe_allow_html=True,
+    )
+
 # ── WHERE clause builder ───────────────────────────────────────────────────────
 def W():
     clauses = []
