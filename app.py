@@ -5,7 +5,6 @@ Run: streamlit run app.py
 
 import os
 import re
-import json
 import sqlite3
 import hashlib
 import tempfile
@@ -162,59 +161,6 @@ except Exception as _boot_err:
     st.code(traceback.format_exc())
     st.stop()
 
-# ── CORDIS data-freshness helpers ─────────────────────────────────────────────
-_KNOWN_SOURCE_DATES = {"FP7": "2018-12-10", "H2020": "2022-01-21", "HEU": "2023-06-28"}
-_CORDIS_DATASET_IDS = {
-    "FP7":  "cordisfp7projects",
-    "H2020": "cordish2020projects",
-    "HEU":  "cordis-eu-research-projects-under-horizon-europe-2021-2027",
-}
-
-def _fmt_date(d: str) -> str:
-    try:
-        return datetime.strptime(d[:10], "%Y-%m-%d").strftime("%b %Y")
-    except Exception:
-        return d[:7] if d else "?"
-
-def _read_meta_dates() -> dict:
-    try:
-        rows = con.execute("SELECT programme, source_api_modified, ingested_at FROM meta").df()
-        return {r["programme"]: dict(r) for _, r in rows.iterrows()}
-    except Exception:
-        return {fp: {"programme": fp, "source_api_modified": d, "ingested_at": ""}
-                for fp, d in _KNOWN_SOURCE_DATES.items()}
-
-def _parse_max_modified(data) -> str:
-    def collect(obj):
-        if isinstance(obj, dict):
-            for k, v in obj.items():
-                if "modified" in k.lower():
-                    for item in (v if isinstance(v, list) else [v]):
-                        val = item.get("@value", item) if isinstance(item, dict) else item
-                        if isinstance(val, str) and len(val) >= 10:
-                            yield val[:10]
-                else:
-                    yield from collect(v)
-        elif isinstance(obj, list):
-            for item in obj:
-                yield from collect(item)
-    dates = list(collect(data))
-    return max(dates) if dates else ""
-
-@st.cache_data(ttl=86400)
-def _fetch_current_api_dates() -> dict:
-    result = {}
-    for fp, dataset_id in _CORDIS_DATASET_IDS.items():
-        url = f"https://data.europa.eu/api/hub/repo/datasets/{dataset_id}"
-        try:
-            with urllib.request.urlopen(url, timeout=5) as resp:
-                d = _parse_max_modified(json.loads(resp.read()))
-            if d:
-                result[fp] = d
-        except Exception:
-            pass
-    return result
-
 # ── Sidebar filters ────────────────────────────────────────────────────────────
 with st.sidebar:
     st.header("Filters")
@@ -243,26 +189,6 @@ with st.sidebar:
         "SELECT DISTINCT fundingScheme FROM projects WHERE fundingScheme IS NOT NULL ORDER BY 1"
     ).df()["fundingScheme"].tolist()
     sel_scheme = st.multiselect("Funding Scheme", schemes, default=[])
-
-    st.divider()
-    try:
-        _meta = _read_meta_dates()
-        _src_parts = " · ".join(
-            f"{fp}: {_fmt_date(_meta.get(fp, {}).get('source_api_modified', ''))}"
-            for fp in ["FP7", "H2020", "HEU"]
-        )
-        _ingested = next(
-            (v.get("ingested_at", "") for v in _meta.values() if v.get("ingested_at")), ""
-        )
-        st.markdown(
-            "<p style='font-size:0.78em;color:#555;margin-bottom:2px;'><b>CORDIS data sources</b></p>"
-            f"<p style='font-size:0.75em;color:#777;margin:0;'>{_src_parts}</p>"
-            + (f"<p style='font-size:0.73em;color:#999;margin:0;'>Ingested: {_fmt_date(_ingested)}</p>"
-               if _ingested else ""),
-            unsafe_allow_html=True,
-        )
-    except Exception:
-        pass
 
 # ── WHERE clause builder ───────────────────────────────────────────────────────
 def W():
@@ -484,27 +410,6 @@ st.markdown(f"""
   </span>
 </div>
 """, unsafe_allow_html=True)
-
-try:
-    _meta_now = _read_meta_dates()
-    _current_dates = _fetch_current_api_dates()
-    _stale_fps = [
-        fp for fp in ["FP7", "H2020", "HEU"]
-        if fp in _current_dates
-        and _meta_now.get(fp, {}).get("source_api_modified", "") < _current_dates[fp]
-    ]
-    if _stale_fps:
-        _stale_detail = ", ".join(
-            f"{fp}: {_fmt_date(_current_dates[fp])} available"
-            f" (current: {_fmt_date(_meta_now[fp]['source_api_modified'])})"
-            for fp in _stale_fps
-        )
-        st.warning(
-            f"⚠️ More recent CORDIS data may be available — {_stale_detail}. "
-            "Please notify the developer via the **Feedback** form (top right)."
-        )
-except Exception:
-    pass
 
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "📊 Overview", "🔬 Deep Dive", "🌍 Geography",
