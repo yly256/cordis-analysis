@@ -271,7 +271,10 @@ _SQL_SYSTEM = (
     "GROUP BY o.country ORDER BY projects DESC. "
     "Only use coordinator_country when the user explicitly asks about coordinators only.\n"
     "- NULL COUNTRIES: always exclude rows where the country/coordinator_country column IS NULL "
-    "by adding the appropriate IS NOT NULL filter."
+    "by adding the appropriate IS NOT NULL filter.\n"
+    "- TOP COORDINATORS: when ranking coordinators, always GROUP BY coordinator_name only (not by country). "
+    "Use ANY_VALUE(coordinator_country) AS coordinator_country if you want to show country alongside name. "
+    "Grouping by both coordinator_name and coordinator_country splits counts and distorts rankings."
 )
 
 def _generate_sql(question: str, where_clause: str) -> str:
@@ -625,7 +628,7 @@ with tab4:
 
     example_queries = {
         "Avg budget & partners by FP": f"SELECT FP, COUNT(*) AS n, ROUND(AVG(totalCost)/1e6,2) AS avg_M, ROUND(AVG(partner_count),1) AS avg_partners FROM projects WHERE {W()} GROUP BY FP",
-        "Top 10 coordinators": f"SELECT coordinator_name, coordinator_country, COUNT(*) AS projects FROM projects WHERE {W()} AND coordinator_name IS NOT NULL GROUP BY 1,2 ORDER BY 3 DESC LIMIT 10",
+        "Top 10 coordinators": f"SELECT coordinator_name, ANY_VALUE(coordinator_country) AS coordinator_country, COUNT(*) AS projects FROM projects WHERE {W()} AND coordinator_name IS NOT NULL GROUP BY coordinator_name ORDER BY projects DESC LIMIT 10",
         "SME participation rate by FP": f"SELECT FP, ROUND(100.0*SUM(CASE WHEN sme_count>0 THEN 1 END)/COUNT(*),1) AS pct_with_sme FROM projects WHERE {W()} GROUP BY FP",
         "Budget by funding scheme (top 20)": f"SELECT fundingScheme, COUNT(*) AS n, ROUND(AVG(totalCost)/1e6,2) AS avg_M FROM projects WHERE {W()} AND fundingScheme IS NOT NULL GROUP BY 1 ORDER BY n DESC LIMIT 20",
         "Projects > €50M": f"SELECT acronym, FP, ROUND(totalCost/1e6,1) AS budget_M, partner_count, coordinator_country FROM projects WHERE {W()} AND totalCost > 50000000 ORDER BY totalCost DESC",
