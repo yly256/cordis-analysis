@@ -57,6 +57,60 @@ st.set_page_config(
     layout="wide",
 )
 
+def _get_secret(name: str) -> str:
+    val = os.getenv(name, "")
+    if not val:
+        try:
+            val = st.secrets[name]
+        except Exception:
+            val = ""
+    return val
+
+# ── Analytics: fire once per session (first script run), not on every rerun ──
+if "_analytics_sent" not in st.session_state:
+    st.session_state._analytics_sent = True
+
+    # PostHog (server-side visit event)
+    _ph_key = _get_secret("POSTHOG_API_KEY")
+    if _ph_key:
+        try:
+            import posthog
+            posthog.api_key = _ph_key
+            posthog.host = _get_secret("POSTHOG_HOST") or "https://us.i.posthog.com"
+            if "_visitor_id" not in st.session_state:
+                st.session_state._visitor_id = hashlib.sha256(os.urandom(16)).hexdigest()
+            posthog.capture(
+                distinct_id=st.session_state._visitor_id,
+                event="app_visit",
+                properties={"app": "cordis-analytics"},
+            )
+        except Exception as _e:
+            print(f"[ANALYTICS] PostHog capture failed: {_e}")
+
+    # Google Analytics (GA4) — injected into the parent document since
+    # components.html runs inside a sandboxed child iframe
+    _ga_id = _get_secret("GA_MEASUREMENT_ID")
+    if _ga_id:
+        _components.html(f"""
+        <script>
+        (function() {{
+          var d = window.parent.document;
+          if (d.getElementById('ga-script-tag')) return;
+          var s1 = d.createElement('script');
+          s1.id = 'ga-script-tag';
+          s1.async = true;
+          s1.src = 'https://www.googletagmanager.com/gtag/js?id={_ga_id}';
+          d.head.appendChild(s1);
+          var s2 = d.createElement('script');
+          s2.innerHTML = "window.dataLayer = window.dataLayer || [];"
+            + "function gtag(){{dataLayer.push(arguments);}}"
+            + "gtag('js', new Date());"
+            + "gtag('config', '{_ga_id}');";
+          d.head.appendChild(s2);
+        }})();
+        </script>
+        """, height=0, width=0)
+
 st.markdown(f"""
 <style>
 /* ── Blue banner ─────────────────────────────────────────────────────────── */
