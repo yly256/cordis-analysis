@@ -70,23 +70,6 @@ def _get_secret(name: str) -> str:
 if "_analytics_sent" not in st.session_state:
     st.session_state._analytics_sent = True
 
-    # PostHog (server-side visit event)
-    _ph_key = _get_secret("POSTHOG_API_KEY")
-    if _ph_key:
-        try:
-            import posthog
-            posthog.api_key = _ph_key
-            posthog.host = _get_secret("POSTHOG_HOST") or "https://us.i.posthog.com"
-            if "_visitor_id" not in st.session_state:
-                st.session_state._visitor_id = hashlib.sha256(os.urandom(16)).hexdigest()
-            posthog.capture(
-                distinct_id=st.session_state._visitor_id,
-                event="app_visit",
-                properties={"app": "cordis-analytics"},
-            )
-        except Exception as _e:
-            print(f"[ANALYTICS] PostHog capture failed: {_e}")
-
     # Google Analytics (GA4) — injected into the parent document since
     # components.html runs inside a sandboxed child iframe
     _ga_id = _get_secret("GA_MEASUREMENT_ID")
