@@ -403,7 +403,12 @@ def _save_query(description: str, question: str, sql_hash: str, sql_text: str, s
 
 
 def _render_query_table(rows_df: pd.DataFrame, key_prefix: str, height: int = 320):
-    """Compact scrollable table + selectbox to pick and run a query."""
+    """Compact scrollable table + selectbox to pick, run, and display a query.
+
+    Runs entirely inside an st.fragment so clicking ▶ Run only reruns this widget,
+    not the whole app — a full-script rerun triggered by a button click resets
+    st.tabs back to Overview.
+    """
     if rows_df.empty:
         st.caption("No queries recorded yet.")
         return
@@ -415,21 +420,39 @@ def _render_query_table(rows_df: pd.DataFrame, key_prefix: str, height: int = 32
         "Runs":        rows_df["run_count"].astype(int),
         "Last run":    rows_df["last_run_at"].str[:10],
     })
-    st.dataframe(disp, width="stretch", hide_index=True, height=height)
 
-    options = [f"{i+1}. {row['description']}" for i, (_, row) in enumerate(rows_df.iterrows())]
-    with st.form(key=f"{key_prefix}_form"):
-        fc1, fc2 = st.columns([5, 1])
-        sel_idx = fc1.selectbox(
-            "Select", range(len(options)),
-            format_func=lambda i: options[i],
-            label_visibility="collapsed",
-            key=f"{key_prefix}_sel",
-        )
-        _submitted = fc2.form_submit_button("▶ Run")
+    @st.fragment
+    def _fragment():
+        st.dataframe(disp, width="stretch", hide_index=True, height=height)
 
-    if _submitted:
-        st.session_state[f"_{key_prefix}_run_data"] = rows_df.iloc[sel_idx].to_dict()
+        options = [f"{i+1}. {row['description']}" for i, (_, row) in enumerate(rows_df.iterrows())]
+        with st.form(key=f"{key_prefix}_form"):
+            fc1, fc2 = st.columns([5, 1])
+            sel_idx = fc1.selectbox(
+                "Select", range(len(options)),
+                format_func=lambda i: options[i],
+                label_visibility="collapsed",
+                key=f"{key_prefix}_sel",
+            )
+            submitted = fc2.form_submit_button("▶ Run")
+
+        if submitted:
+            sel = rows_df.iloc[sel_idx].to_dict()
+            with st.spinner("Running query…"):
+                try:
+                    r = con.execute(sel["sql_text"]).df()
+                    st.success(f"{len(r):,} rows returned")
+                    st.dataframe(r, width="stretch", hide_index=True)
+                    st.download_button("⬇ Download CSV", r.to_csv(index=False),
+                                       f"{key_prefix}_result.csv", "text/csv")
+                    if sel.get("summary"):
+                        st.info(sel["summary"])
+                    _save_query(sel["description"], sel["question"],
+                                sel["sql_hash"], sel["sql_text"], sel.get("summary", ""))
+                except Exception as e:
+                    st.info(f"The cached query couldn't run.\n\n_Detail: {e}_")
+
+    _fragment()
 
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
@@ -674,17 +697,25 @@ with tab4:
     sel_example = st.selectbox("Load example query", ["(custom)"] + list(example_queries.keys()))
     default_q = example_queries.get(sel_example, f"SELECT * FROM projects WHERE {W()} LIMIT 10")
 
-    q = st.text_area("SQL", value=default_q, height=100)
+    @st.fragment
+    def _run_sql_fragment(default_sql):
+        """Isolated so clicking Run Query only reruns this block, not the whole app
+        (a full rerun triggered by a button click resets st.tabs back to Overview)."""
+        with st.form(key="sql_form"):
+            q = st.text_area("SQL", value=default_sql, height=100)
+            run_clicked = st.form_submit_button("▶ Run Query")
 
-    if st.button("▶ Run Query"):
-        try:
-            result = con.execute(q).df()
-            st.success(f"{len(result):,} rows returned")
-            st.dataframe(result, width="stretch", hide_index=True)
-            csv = result.to_csv(index=False)
-            st.download_button("⬇ Download CSV", csv, "result.csv", "text/csv")
-        except Exception as e:
-            st.error(f"SQL error: {e}")
+        if run_clicked:
+            try:
+                result = con.execute(q).df()
+                st.success(f"{len(result):,} rows returned")
+                st.dataframe(result, width="stretch", hide_index=True)
+                csv = result.to_csv(index=False)
+                st.download_button("⬇ Download CSV", csv, "result.csv", "text/csv")
+            except Exception as e:
+                st.error(f"SQL error: {e}")
+
+    _run_sql_fragment(default_q)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab5:
@@ -698,64 +729,70 @@ with tab5:
         unsafe_allow_html=True,
     )
 
-    question = st.text_input(
-        "Your question",
-        placeholder="e.g. Which countries received the most Horizon Europe funding?",
-    )
+    @st.fragment
+    def _ai_ask_fragment():
+        """Isolated so Ask Claude only reruns this block, not the whole app
+        (a full rerun triggered by a button click resets st.tabs back to Overview)."""
+        with st.form(key="ai_ask_form"):
+            question = st.text_input(
+                "Your question",
+                placeholder="e.g. Which countries received the most Horizon Europe funding?",
+            )
+            ask_clicked = st.form_submit_button("Ask Claude")
 
-    ask_clicked = st.button("Ask Claude")
+        if ask_clicked and question.strip():
+            try:
+                guard = _check_relevance(question)
+                if not guard.get("relevant", False):
+                    st.warning(
+                        f"That question doesn't seem related to CORDIS data — "
+                        f"{guard.get('reason', 'please ask about EU research projects, budgets, or organisations.')} "
+                        "Try rephrasing."
+                    )
+                else:
+                    with st.spinner("Generating SQL…"):
+                        sql = _generate_sql(question, W())
+                    with st.expander("Generated SQL", expanded=False):
+                        st.code(sql, language="sql")
 
-    if ask_clicked and question.strip():
-        try:
-            guard = _check_relevance(question)
-            if not guard.get("relevant", False):
-                st.warning(
-                    f"That question doesn't seem related to CORDIS data — "
-                    f"{guard.get('reason', 'please ask about EU research projects, budgets, or organisations.')} "
-                    "Try rephrasing."
-                )
-            else:
-                with st.spinner("Generating SQL…"):
-                    sql = _generate_sql(question, W())
-                with st.expander("Generated SQL", expanded=False):
-                    st.code(sql, language="sql")
-
-                result = None
-                with st.spinner("Running query…"):
-                    try:
-                        result = con.execute(sql).df()
-                    except Exception as e:
-                        with st.spinner("Fixing query…"):
-                            sql = _fix_sql(question, sql, str(e), W())
-                        with st.expander("Corrected SQL", expanded=False):
-                            st.code(sql, language="sql")
+                    result = None
+                    with st.spinner("Running query…"):
                         try:
                             result = con.execute(sql).df()
-                        except Exception as e2:
-                            st.info(
-                                "Sorry, I wasn't able to generate a working query for that question. "
-                                "Try rephrasing, or use the SQL tab for full control.\n\n"
-                                f"_Technical detail: {e2}_"
-                            )
+                        except Exception as e:
+                            with st.spinner("Fixing query…"):
+                                sql = _fix_sql(question, sql, str(e), W())
+                            with st.expander("Corrected SQL", expanded=False):
+                                st.code(sql, language="sql")
+                            try:
+                                result = con.execute(sql).df()
+                            except Exception as e2:
+                                st.info(
+                                    "Sorry, I wasn't able to generate a working query for that question. "
+                                    "Try rephrasing, or use the SQL tab for full control.\n\n"
+                                    f"_Technical detail: {e2}_"
+                                )
 
-                if result is not None:
-                    st.success(f"{len(result):,} rows returned")
-                    st.dataframe(result, width="stretch", hide_index=True)
-                    st.download_button("⬇ Download CSV", result.to_csv(index=False),
-                                       "ai_query_result.csv", "text/csv")
-                    with st.spinner("Summarising…"):
-                        summary = _summarize(question, result)
-                    st.info(summary)
-                    with st.spinner("Saving to history…"):
-                        desc = _distill_description(question)
-                        _save_query(desc, question, _sql_hash(sql), sql, summary)
-        except anthropic.APIStatusError as _api_err:
-            if _api_err.status_code == 529:
-                st.warning("Claude is overloaded right now — please wait a moment and try again.")
-            elif _api_err.status_code == 429:
-                st.warning("Rate limit reached — please wait a moment and try again.")
-            else:
-                st.warning(f"AI API error (HTTP {_api_err.status_code}) — please try again shortly.")
+                    if result is not None:
+                        st.success(f"{len(result):,} rows returned")
+                        st.dataframe(result, width="stretch", hide_index=True)
+                        st.download_button("⬇ Download CSV", result.to_csv(index=False),
+                                           "ai_query_result.csv", "text/csv")
+                        with st.spinner("Summarising…"):
+                            summary = _summarize(question, result)
+                        st.info(summary)
+                        with st.spinner("Saving to history…"):
+                            desc = _distill_description(question)
+                            _save_query(desc, question, _sql_hash(sql), sql, summary)
+            except anthropic.APIStatusError as _api_err:
+                if _api_err.status_code == 529:
+                    st.warning("Claude is overloaded right now — please wait a moment and try again.")
+                elif _api_err.status_code == 429:
+                    st.warning("Rate limit reached — please wait a moment and try again.")
+                else:
+                    st.warning(f"AI API error (HTTP {_api_err.status_code}) — please try again shortly.")
+
+    _ai_ask_fragment()
 
     # ── Last 10 recent queries ───────────────────────────────────────────────
     st.divider()
@@ -776,28 +813,35 @@ with tab5:
             })
             st.dataframe(_disp, width="stretch", hide_index=True, height=280)
             _opts = [f"{i+1}. {row['description']}" for i, (_, row) in enumerate(last10.iterrows())]
-            with st.form(key="ai5_form"):
-                _fc1, _fc2 = st.columns([5, 1])
-                _ai5_idx = _fc1.selectbox("Select", range(len(_opts)),
-                                          format_func=lambda i: _opts[i],
-                                          label_visibility="collapsed")
-                _ai5_submitted = _fc2.form_submit_button("▶ Run")
-            if _ai5_submitted:
-                _ai5_sel = last10.iloc[_ai5_idx].to_dict()
-                with st.spinner("Running query…"):
-                    try:
-                        _r = con.execute(_ai5_sel["sql_text"]).df()
-                        st.success(f"{len(_r):,} rows returned")
-                        st.dataframe(_r, width="stretch", hide_index=True)
-                        st.download_button("⬇ Download CSV", _r.to_csv(index=False),
-                                           "ai_query_result.csv", "text/csv")
-                        if _ai5_sel.get("summary"):
-                            st.info(_ai5_sel["summary"])
-                        _save_query(_ai5_sel["description"], _ai5_sel["question"],
-                                    _ai5_sel["sql_hash"], _ai5_sel["sql_text"],
-                                    _ai5_sel.get("summary", ""))
-                    except Exception as _e:
-                        st.info(f"The cached query couldn't run — try typing the question again.\n\n_Detail: {_e}_")
+
+            @st.fragment
+            def _ai_recent_fragment():
+                """Isolated so clicking Run only reruns this block, not the whole app
+                (a full rerun triggered by a button click resets st.tabs back to Overview)."""
+                with st.form(key="ai5_form"):
+                    _fc1, _fc2 = st.columns([5, 1])
+                    _ai5_idx = _fc1.selectbox("Select", range(len(_opts)),
+                                              format_func=lambda i: _opts[i],
+                                              label_visibility="collapsed")
+                    _ai5_submitted = _fc2.form_submit_button("▶ Run")
+                if _ai5_submitted:
+                    _ai5_sel = last10.iloc[_ai5_idx].to_dict()
+                    with st.spinner("Running query…"):
+                        try:
+                            _r = con.execute(_ai5_sel["sql_text"]).df()
+                            st.success(f"{len(_r):,} rows returned")
+                            st.dataframe(_r, width="stretch", hide_index=True)
+                            st.download_button("⬇ Download CSV", _r.to_csv(index=False),
+                                               "ai_query_result.csv", "text/csv")
+                            if _ai5_sel.get("summary"):
+                                st.info(_ai5_sel["summary"])
+                            _save_query(_ai5_sel["description"], _ai5_sel["question"],
+                                        _ai5_sel["sql_hash"], _ai5_sel["sql_text"],
+                                        _ai5_sel.get("summary", ""))
+                        except Exception as _e:
+                            st.info(f"The cached query couldn't run — try typing the question again.\n\n_Detail: {_e}_")
+
+            _ai_recent_fragment()
     else:
         st.caption("Query history unavailable.")
 
@@ -820,19 +864,3 @@ with tab6:
             "SELECT * FROM query_log ORDER BY run_count DESC, last_run_at DESC", hcon
         )
         _render_query_table(all_queries, "h6", height=min(80 + total * 38, 520))
-        _h6_rd = st.session_state.pop("_h6_run_data", None)
-        if _h6_rd:
-            with st.spinner("Running query…"):
-                try:
-                    _r = con.execute(_h6_rd["sql_text"]).df()
-                    st.success(f"{len(_r):,} rows returned")
-                    st.dataframe(_r, width="stretch", hide_index=True)
-                    st.download_button("⬇ Download CSV", _r.to_csv(index=False),
-                                       "history_result.csv", "text/csv")
-                    if _h6_rd.get("summary"):
-                        st.info(_h6_rd["summary"])
-                    _save_query(_h6_rd["description"], _h6_rd["question"],
-                                _h6_rd["sql_hash"], _h6_rd["sql_text"],
-                                _h6_rd.get("summary", ""))
-                except Exception as _e:
-                    st.info(f"The cached query couldn't run.\n\n_Detail: {_e}_")
