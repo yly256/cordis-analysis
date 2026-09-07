@@ -66,6 +66,44 @@ def _get_secret(name: str) -> str:
             val = ""
     return val
 
+# ── Anonymous, aggregate-only usage counter (Upstash Redis) ─────────────────
+# Tracks a single global integer — no per-user, session, or IP data is ever
+# read or stored here.
+_QUERIES_RUN_KEY  = "cordis_analytics_queries_run"
+_QUERIES_RUN_SEED = 122
+
+@st.cache_resource
+def _get_counter_redis():
+    url = _get_secret("UPSTASH_REDIS_REST_URL")
+    token = _get_secret("UPSTASH_REDIS_REST_TOKEN")
+    if not url or not token:
+        return None
+    from upstash_redis import Redis
+    return Redis(url=url, token=token)
+
+def get_queries_run_count():
+    r = _get_counter_redis()
+    if r is None:
+        return None
+    try:
+        # Atomic "set if not exists" so redeploys never reset an existing count.
+        r.setnx(_QUERIES_RUN_KEY, _QUERIES_RUN_SEED)
+        return int(r.get(_QUERIES_RUN_KEY))
+    except Exception:
+        return None
+
+def increment_queries_run():
+    """Call exactly once per actual query execution (a Run/Ask button
+    succeeding), never on tab switches or filter changes."""
+    r = _get_counter_redis()
+    if r is None:
+        return None
+    try:
+        r.setnx(_QUERIES_RUN_KEY, _QUERIES_RUN_SEED)
+        return r.incr(_QUERIES_RUN_KEY)
+    except Exception:
+        return None
+
 # ── Analytics: fire once per session (first script run), not on every rerun ──
 if "_analytics_sent" not in st.session_state:
     st.session_state._analytics_sent = True
@@ -134,6 +172,9 @@ _col_title, _col_fb = st.columns([9, 1])
 with _col_title:
     st.title("🇪🇺 CORDIS Project Analytics")
     st.caption("FP7 · H2020 · Horizon Europe — unified database")
+    _queries_run = get_queries_run_count()
+    if _queries_run is not None:
+        st.caption(f"{_queries_run:,} queries run — anonymous, aggregate count only.")
 with _col_fb:
     st.markdown(
         "<div style='display:flex;justify-content:flex-end;align-items:center;height:100%;padding-top:1.2rem;'>"
@@ -441,6 +482,7 @@ def _render_query_table(rows_df: pd.DataFrame, key_prefix: str, height: int = 32
             with st.spinner("Running query…"):
                 try:
                     r = con.execute(sel["sql_text"]).df()
+                    increment_queries_run()
                     st.success(f"{len(r):,} rows returned")
                     st.dataframe(r, width="stretch", hide_index=True)
                     st.download_button("⬇ Download CSV", r.to_csv(index=False),
@@ -708,6 +750,7 @@ with tab4:
         if run_clicked:
             try:
                 result = con.execute(q).df()
+                increment_queries_run()
                 st.success(f"{len(result):,} rows returned")
                 st.dataframe(result, width="stretch", hide_index=True)
                 csv = result.to_csv(index=False)
@@ -774,6 +817,7 @@ with tab5:
                                 )
 
                     if result is not None:
+                        increment_queries_run()
                         st.success(f"{len(result):,} rows returned")
                         st.dataframe(result, width="stretch", hide_index=True)
                         st.download_button("⬇ Download CSV", result.to_csv(index=False),
@@ -829,6 +873,7 @@ with tab5:
                     with st.spinner("Running query…"):
                         try:
                             _r = con.execute(_ai5_sel["sql_text"]).df()
+                            increment_queries_run()
                             st.success(f"{len(_r):,} rows returned")
                             st.dataframe(_r, width="stretch", hide_index=True)
                             st.download_button("⬇ Download CSV", _r.to_csv(index=False),
