@@ -5,3 +5,4 @@ data/
 __pycache__/
 .claude/
 .streamlit/secrets.toml
+cordis_qr.png
