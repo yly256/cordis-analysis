@@ -7,6 +7,7 @@ Hardened DuckDB access for visitor-supplied SQL (SQL tab, Ask Claude, replayed h
 - run_user_query(): guard + per-query cursor + timeout + row cap.
 """
 
+import logging
 import threading
 
 import duckdb
@@ -14,6 +15,15 @@ import pandas as pd
 
 QUERY_TIMEOUT_S = 15
 MAX_ROWS = 10_000
+
+# Server-side log (Streamlit Cloud "Manage app" logs). Visitors never see this.
+log = logging.getLogger("cordis")
+if not log.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("[%(levelname)s] %(name)s: %(message)s"))
+    log.addHandler(_h)
+    log.setLevel(logging.INFO)
+    log.propagate = False
 
 _HARDENED_CONFIG = {
     "enable_external_access": False,
@@ -45,6 +55,20 @@ def guard_sql(conn: duckdb.DuckDBPyConnection, sql: str) -> None:
         raise UnsafeQueryError("Only a single SELECT statement is allowed.")
     if statements[0].type != duckdb.StatementType.SELECT:
         raise UnsafeQueryError("Only SELECT queries are allowed.")
+
+
+def query_error_message(exc: Exception) -> str:
+    """Log the full error server-side; return a one-line message safe to show visitors.
+
+    DuckDB messages put the summary on the first line and echo the query
+    ("LINE 1: ...") and candidate bindings on later lines — only the first is kept.
+    """
+    log.warning("Query failed", exc_info=exc)
+    text = str(exc).strip()
+    first = text.splitlines()[0].split("LINE ")[0].strip() if text else ""
+    if len(first) > 200:
+        first = first[:200] + "…"
+    return f"Query failed: {first}" if first else "Query failed."
 
 
 def run_user_query(conn: duckdb.DuckDBPyConnection, sql: str):

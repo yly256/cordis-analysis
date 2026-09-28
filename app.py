@@ -19,7 +19,9 @@ from pathlib import Path
 import anthropic
 from sql_safety import (
     connect_readonly, run_user_query, UnsafeQueryError, QueryTimeoutError, MAX_ROWS,
+    query_error_message, log,
 )
+from urllib.parse import urlparse
 from dotenv import load_dotenv
 import streamlit.components.v1 as _components
 
@@ -41,16 +43,21 @@ _LOGO_SRC  = (
 print(f"[BOOT] DB_PATH   = {DB_PATH}  exists={Path(DB_PATH).exists()}")
 print(f"[BOOT] HISTORY_DB= {HISTORY_DB}")
 
+_UNAVAILABLE_MSG = "The app is temporarily unavailable, please try again later."
+_AI_UNAVAILABLE_MSG = "The AI assistant is temporarily unavailable, please try again later."
+
 def _get_ai_client():
     key = os.getenv("ANTHROPIC_API_KEY", "")
     if not key:
         try:
             key = st.secrets["ANTHROPIC_API_KEY"]
         except Exception as _e:
-            st.error(f"st.secrets[\"ANTHROPIC_API_KEY\"] raised {type(_e).__name__}: {_e}")
+            log.error("Could not read ANTHROPIC_API_KEY from st.secrets: %s", type(_e).__name__)
+            st.error(_AI_UNAVAILABLE_MSG)
             st.stop()
     if not key:
-        st.error("ANTHROPIC_API_KEY is empty. Check Streamlit Cloud → Settings → Secrets.")
+        log.error("ANTHROPIC_API_KEY is empty (check Streamlit Cloud → Settings → Secrets)")
+        st.error(_AI_UNAVAILABLE_MSG)
         st.stop()
     return anthropic.Anthropic(api_key=key)
 
@@ -59,6 +66,9 @@ st.set_page_config(
     page_icon="🇪🇺",
     layout="wide",
 )
+
+# Uncaught exceptions: generic message in the browser, details only in the server log
+st.set_option("client.showErrorDetails", "none")
 
 def _get_secret(name: str) -> str:
     val = os.getenv(name, "")
@@ -84,27 +94,39 @@ def _get_counter_redis():
     from upstash_redis import Redis
     return Redis(url=url, token=token)
 
+def _log_counter_error(action: str, exc: Exception):
+    """Log type + message only, with the Upstash URL, host and token redacted."""
+    msg = str(exc)
+    url = _get_secret("UPSTASH_REDIS_REST_URL")
+    token = _get_secret("UPSTASH_REDIS_REST_TOKEN")
+    for s in (url, token, urlparse(url).hostname if url else ""):
+        if s:
+            msg = msg.replace(s, "[redacted]")
+    log.error("Queries-run counter %s failed: %s: %s", action, type(exc).__name__, msg)
+
 def get_queries_run_count():
-    r = _get_counter_redis()
-    if r is None:
-        return None
     try:
+        r = _get_counter_redis()
+        if r is None:
+            return None
         # Atomic "set if not exists" so redeploys never reset an existing count.
         r.setnx(_QUERIES_RUN_KEY, _QUERIES_RUN_SEED)
         return int(r.get(_QUERIES_RUN_KEY))
-    except Exception:
+    except Exception as e:
+        _log_counter_error("read", e)
         return None
 
 def increment_queries_run():
     """Call exactly once per actual query execution (a Run/Ask button
     succeeding), never on tab switches or filter changes."""
-    r = _get_counter_redis()
-    if r is None:
-        return None
     try:
+        r = _get_counter_redis()
+        if r is None:
+            return None
         r.setnx(_QUERIES_RUN_KEY, _QUERIES_RUN_SEED)
         return r.incr(_QUERIES_RUN_KEY)
-    except Exception:
+    except Exception as e:
+        _log_counter_error("increment", e)
         return None
 
 # ── Analytics: fire once per session (first script run), not on every rerun ──
@@ -231,15 +253,14 @@ try:
     try:
         hcon = get_hcon()
         print("[BOOT] history db connected")
-    except Exception as e:
-        print(f"[BOOT WARNING] history db failed: {e}")
-        st.warning(f"Query history unavailable: {e}")
+    except Exception:
+        log.warning("History DB unavailable", exc_info=True)
+        st.warning("Query history is unavailable right now.")
         hcon = None
 
-except Exception as _boot_err:
-    import traceback
-    st.error("### Startup error — please share this with the developer")
-    st.code(traceback.format_exc())
+except Exception:
+    log.exception("Startup failed")
+    st.error(_UNAVAILABLE_MSG)
     st.stop()
 
 # ── Sidebar filters ────────────────────────────────────────────────────────────
@@ -343,11 +364,14 @@ _SQL_SYSTEM = (
     "qualify every filter column with that alias (e.g. p.FP, p.status, p.startDate).\n"
     "- Use ROUND(x/1e6, 2) for EUR millions. Limit to 100 rows unless asked otherwise.\n"
     "- Use YEAR(startDate) for year extraction. SELECT only — no mutations.\n"
+    "- JOIN KEYS: the project key is projects.id (there is NO projects.projectID column). "
+    "organizations, topics, legal_basis, euro_sci_voc and policy_priorities each have a projectID "
+    "column that references projects.id — always join as <table>.projectID = p.id.\n"
     "- COUNTRY PARTICIPATION: when counting projects per country, always count ALL projects "
     "where that country appears in ANY role (coordinator or participant). Do this by joining "
-    "the organizations table and counting DISTINCT projectIDs, e.g.: "
-    "SELECT o.country, COUNT(DISTINCT p.projectID) AS projects, ROUND(SUM(p.totalCost)/1e6,2) AS total_funding_M "
-    "FROM projects p JOIN organizations o ON p.projectID = o.projectID "
+    "the organizations table and counting DISTINCT project ids, e.g.: "
+    "SELECT o.country, COUNT(DISTINCT p.id) AS projects, ROUND(SUM(p.totalCost)/1e6,2) AS total_funding_M "
+    "FROM projects p JOIN organizations o ON o.projectID = p.id "
     "WHERE <filters on p> AND o.country IS NOT NULL "
     "GROUP BY o.country ORDER BY projects DESC. "
     "Only use coordinator_country when the user explicitly asks about coordinators only.\n"
@@ -497,7 +521,7 @@ def _render_query_table(rows_df: pd.DataFrame, key_prefix: str, height: int = 32
                 except (UnsafeQueryError, QueryTimeoutError) as e:
                     st.info(f"The cached query couldn't run. {e}")
                 except Exception as e:
-                    st.info(f"The cached query couldn't run.\n\n_Detail: {e}_")
+                    st.info(f"The cached query couldn't run. {query_error_message(e)}")
 
     _fragment()
 
@@ -763,7 +787,7 @@ with tab4:
             except (UnsafeQueryError, QueryTimeoutError) as e:
                 st.error(str(e))
             except Exception as e:
-                st.error(f"SQL error: {e}")
+                st.error(query_error_message(e))
 
     _run_sql_fragment(default_q)
 
@@ -812,6 +836,7 @@ with tab5:
                         except QueryTimeoutError as e:
                             st.info(f"{e} Try a narrower question.")
                         except Exception as e:
+                            log.info("Generated SQL failed, requesting correction: %s", type(e).__name__)
                             with st.spinner("Fixing query…"):
                                 sql = _fix_sql(question, sql, str(e), W())
                             with st.expander("Corrected SQL", expanded=False):
@@ -827,7 +852,7 @@ with tab5:
                                 st.info(
                                     "Sorry, I wasn't able to generate a working query for that question. "
                                     "Try rephrasing, or use the SQL tab for full control.\n\n"
-                                    f"_Technical detail: {e2}_"
+                                    f"_{query_error_message(e2)}_"
                                 )
 
                     if result is not None:
@@ -848,7 +873,11 @@ with tab5:
                 elif _api_err.status_code == 429:
                     st.warning("Rate limit reached — please wait a moment and try again.")
                 else:
+                    log.error("Anthropic API error: HTTP %s", _api_err.status_code)
                     st.warning(f"AI API error (HTTP {_api_err.status_code}) — please try again shortly.")
+            except Exception:
+                log.exception("Ask Claude failed")
+                st.warning(_AI_UNAVAILABLE_MSG)
 
     _ai_ask_fragment()
 
@@ -900,7 +929,7 @@ with tab5:
                         except (UnsafeQueryError, QueryTimeoutError) as _e:
                             st.info(f"The cached query couldn't run. {_e}")
                         except Exception as _e:
-                            st.info(f"The cached query couldn't run — try typing the question again.\n\n_Detail: {_e}_")
+                            st.info(f"The cached query couldn't run — try typing the question again. {query_error_message(_e)}")
 
             _ai_recent_fragment()
     else:
