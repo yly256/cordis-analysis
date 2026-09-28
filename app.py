@@ -5,6 +5,7 @@ Run: streamlit run app.py
 
 import os
 import re
+import json
 import sqlite3
 import hashlib
 import time
@@ -190,33 +191,29 @@ def _ai_admit_question(question: str):
     st.session_state["_ai_last_question_at"] = now
     return None
 
-# ── Analytics: fire once per session (first script run), not on every rerun ──
+# ── Analytics: consent banner + GA only after Accept (logic in ga_consent.js) ──
+_GA_ID_RE = re.compile(r"G-[A-Z0-9]{4,20}")
+
+def _ga_consent_html(ga_id: str) -> str:
+    """components.html payload that injects ga_consent.js into the parent (Streamlit)
+    document once per page load; the script's own flag stops duplicates on reruns."""
+    js = (_APP_DIR / "ga_consent.js").read_text(encoding="utf-8")
+    js = js.replace("__GA_ID__", json.dumps(ga_id))
+    payload = json.dumps(js).replace("</", "<\\/")
+    return (
+        "<script>(function(){var p=window.parent;if(p.__cordisConsentInit)return;"
+        "var s=p.document.createElement('script');s.id='cordis-consent-script';"
+        f"s.textContent={payload};p.document.head.appendChild(s);}})();</script>"
+    )
+
+# First script run of each session (i.e. each page load), not on every rerun
 if "_analytics_sent" not in st.session_state:
     st.session_state._analytics_sent = True
-
-    # Google Analytics (GA4) — injected into the parent document since
-    # components.html runs inside a sandboxed child iframe
     _ga_id = _get_secret("GA_MEASUREMENT_ID")
-    if _ga_id:
-        _components.html(f"""
-        <script>
-        (function() {{
-          var d = window.parent.document;
-          if (d.getElementById('ga-script-tag')) return;
-          var s1 = d.createElement('script');
-          s1.id = 'ga-script-tag';
-          s1.async = true;
-          s1.src = 'https://www.googletagmanager.com/gtag/js?id={_ga_id}';
-          d.head.appendChild(s1);
-          var s2 = d.createElement('script');
-          s2.innerHTML = "window.dataLayer = window.dataLayer || [];"
-            + "function gtag(){{dataLayer.push(arguments);}}"
-            + "gtag('js', new Date());"
-            + "gtag('config', '{_ga_id}');";
-          d.head.appendChild(s2);
-        }})();
-        </script>
-        """, height=0, width=0)
+    if _ga_id and _GA_ID_RE.fullmatch(_ga_id):
+        _components.html(_ga_consent_html(_ga_id), height=0, width=0)
+    elif _ga_id:
+        log.warning("GA_MEASUREMENT_ID has an unexpected format; analytics disabled")
 
 st.markdown(f"""
 <style>
@@ -622,12 +619,12 @@ _PRIVACY_NOTE_HTML = (
     "<p style='font-size:0.82em;color:#555;margin-top:0;'>"
     "Questions and queries you run are shown to all visitors in the Query History tab. "
     "Don't enter personal or confidential information. History is cleared from time to time. "
-    "This site uses Google Analytics.</p>"
+    "This site uses Google Analytics only if you accept cookies.</p>"
 )
 # SQL-tab queries are never written to the history log
 _SQL_NOTE_HTML = (
     "<p style='font-size:0.82em;color:#555;margin-top:0;'>"
-    "Queries you run here are not saved. This site uses Google Analytics.</p>"
+    "Queries you run here are not saved. This site uses Google Analytics only if you accept cookies.</p>"
 )
 
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([

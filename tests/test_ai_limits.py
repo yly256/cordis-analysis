@@ -160,7 +160,7 @@ class TestAiLimits(unittest.TestCase):
     def test_sql_tab_note(self):
         sql_tab = self.at.tabs[3]
         notes = " ".join(m.value for m in sql_tab.markdown)
-        self.assertIn("Queries you run here are not saved. This site uses Google Analytics.", notes)
+        self.assertIn("Queries you run here are not saved. This site uses Google Analytics only if you accept cookies.", notes)
         self.assertNotIn("shown to all visitors", notes)
         for i in (4, 5):  # AI Query and History tabs keep the full note
             self.assertIn("shown to all visitors",
