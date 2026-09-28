@@ -7,9 +7,10 @@ import os
 import re
 import sqlite3
 import hashlib
+import time
 import tempfile
 import base64
-from datetime import datetime
+from datetime import datetime, timezone
 import streamlit as st
 import duckdb
 import pandas as pd
@@ -40,6 +41,12 @@ _APP_DIR  = Path(__file__).parent
 DB_PATH   = str(_APP_DIR / "cordis.duckdb")
 DB_URL    = "https://github.com/yly256/cordis-analysis/releases/download/v1.0/cordis.duckdb"
 HISTORY_DB = str(Path(tempfile.gettempdir()) / "query_history.db")
+
+# ── Ask Claude cost limits (each question ≈ 4 API calls) ──────────────────────
+AI_DAILY_QUESTION_CAP     = 200   # global, per UTC day (Upstash Redis) — the real limit
+AI_SESSION_QUESTION_LIMIT = 10    # per browser session — a speed bump (reload resets it)
+AI_COOLDOWN_S             = 5     # minimum seconds between questions in a session
+AI_MAX_QUESTION_CHARS     = 500
 
 _logo_file = _APP_DIR / "orientos_logo.png"
 _LOGO_SRC  = (
@@ -101,7 +108,7 @@ def _get_counter_redis():
     from upstash_redis import Redis
     return Redis(url=url, token=token)
 
-def _log_counter_error(action: str, exc: Exception):
+def _log_redis_error(what: str, exc: Exception):
     """Log type + message only, with the Upstash URL, host and token redacted."""
     msg = str(exc)
     url = _get_secret("UPSTASH_REDIS_REST_URL")
@@ -109,7 +116,10 @@ def _log_counter_error(action: str, exc: Exception):
     for s in (url, token, urlparse(url).hostname if url else ""):
         if s:
             msg = msg.replace(s, "[redacted]")
-    log.error("Queries-run counter %s failed: %s: %s", action, type(exc).__name__, msg)
+    log.error("%s failed: %s: %s", what, type(exc).__name__, msg)
+
+def _log_counter_error(action: str, exc: Exception):
+    _log_redis_error(f"Queries-run counter {action}", exc)
 
 def get_queries_run_count():
     try:
@@ -135,6 +145,50 @@ def increment_queries_run():
     except Exception as e:
         _log_counter_error("increment", e)
         return None
+
+# ── Ask Claude limits: global daily cap (Redis) + per-session limit and cooldown ─
+# Only aggregate counts are stored — no IPs or user identifiers.
+_AI_DAILY_KEY_PREFIX = "cordis_ai_questions"
+_AI_DAILY_CAP_MSG = ("The AI assistant has reached today's limit, please try again tomorrow. "
+                     "The SQL tab is still available.")
+
+def _ai_daily_increment():
+    """INCR today's (UTC) global question count. Returns the new count, or None if
+    Redis is unavailable (the caller then relies on the per-session limit only)."""
+    try:
+        r = _get_counter_redis()
+        if r is None:
+            return None
+        key = f"{_AI_DAILY_KEY_PREFIX}:{datetime.now(timezone.utc):%Y-%m-%d}"
+        n = int(r.incr(key))
+        if n == 1:
+            r.expire(key, 48 * 3600)
+        return n
+    except Exception as e:
+        _log_redis_error("AI daily cap", e)
+        return None
+
+def _ai_admit_question(question: str):
+    """Apply the Ask Claude limits. Returns a message if the question is refused, else None.
+
+    Counts are taken here, before any API call, so failed or aborted calls still count.
+    """
+    if len(question) > AI_MAX_QUESTION_CHARS:
+        return f"Please keep questions under {AI_MAX_QUESTION_CHARS} characters."
+    used = st.session_state.get("_ai_questions_used", 0)
+    if used >= AI_SESSION_QUESTION_LIMIT:
+        return (f"You've used all {AI_SESSION_QUESTION_LIMIT} questions for this session. "
+                "The SQL tab is still available.")
+    now = time.monotonic()
+    last = st.session_state.get("_ai_last_question_at")
+    if last is not None and now - last < AI_COOLDOWN_S:
+        return f"Please wait {AI_COOLDOWN_S} seconds between questions."
+    n = _ai_daily_increment()
+    if n is not None and n > AI_DAILY_QUESTION_CAP:
+        return _AI_DAILY_CAP_MSG
+    st.session_state["_ai_questions_used"] = used + 1
+    st.session_state["_ai_last_question_at"] = now
+    return None
 
 # ── Analytics: fire once per session (first script run), not on every rerun ──
 if "_analytics_sent" not in st.session_state:
@@ -570,6 +624,11 @@ _PRIVACY_NOTE_HTML = (
     "Don't enter personal or confidential information. History is cleared from time to time. "
     "This site uses Google Analytics.</p>"
 )
+# SQL-tab queries are never written to the history log
+_SQL_NOTE_HTML = (
+    "<p style='font-size:0.82em;color:#555;margin-top:0;'>"
+    "Queries you run here are not saved. This site uses Google Analytics.</p>"
+)
 
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "📊 Overview", "🔬 Deep Dive", "🌍 Geography",
@@ -773,7 +832,7 @@ with tab4:
         "<p style='font-size:0.95em;color:#003399;font-weight:600;margin-bottom:0.5rem;'>"
         "Tables: <code>projects</code> · <code>organizations</code> · <code>topics</code> · "
         "<code>legal_basis</code> · <code>euro_sci_voc</code> · <code>policy_priorities</code></p>"
-        + _PRIVACY_NOTE_HTML,
+        + _SQL_NOTE_HTML,
         unsafe_allow_html=True,
     )
 
@@ -829,6 +888,7 @@ with tab5:
             question = st.text_input(
                 "Your question",
                 placeholder="e.g. Which countries received the most Horizon Europe funding?",
+                # No max_chars: Streamlit would silently truncate; _ai_admit_question rejects instead
             )
             ask_clicked = st.form_submit_button("Ask Claude")
 
@@ -841,6 +901,8 @@ with tab5:
                         f"{guard.get('reason', 'please ask about EU research projects, budgets, or organisations.')} "
                         "Try rephrasing."
                     )
+                elif (refusal := _ai_admit_question(question)) is not None:
+                    st.warning(refusal)
                 else:
                     with st.spinner("Generating SQL…"):
                         sql = _generate_sql(question, W())
@@ -896,6 +958,9 @@ with tab5:
             except Exception:
                 log.exception("Ask Claude failed")
                 st.warning(_AI_UNAVAILABLE_MSG)
+
+        _left = max(0, AI_SESSION_QUESTION_LIMIT - st.session_state.get("_ai_questions_used", 0))
+        st.caption(f"{_left} of {AI_SESSION_QUESTION_LIMIT} questions left this session")
 
     _ai_ask_fragment()
 
