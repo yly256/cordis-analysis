@@ -1,0 +1,4 @@
+[client]
+# Uncaught errors: generic message in the browser, details only in the server log.
+# Applies even to errors before app.py runs (app.py also sets this as a backstop).
+showErrorDetails = "none"

@@ -17,13 +17,15 @@ sys.path.insert(0, str(ROOT))
 
 import sql_safety  # noqa: E402
 from sql_safety import (  # noqa: E402
-    connect_readonly, run_user_query, UnsafeQueryError, QueryTimeoutError,
+    connect_readonly, run_user_query,
 )
 
 DB_PATH = ROOT / "cordis.duckdb"
 
-# Errors that mean "blocked by policy", as opposed to e.g. file-not-found
-BLOCKED = (UnsafeQueryError, duckdb.PermissionException)
+# Errors that mean "blocked by policy", as opposed to e.g. file-not-found.
+# Looked up at call time: app.py may reload sql_safety, redefining its exception classes.
+def _blocked():
+    return (sql_safety.UnsafeQueryError, duckdb.PermissionException)
 
 MUST_FAIL = [
     "SELECT * FROM read_text('/proc/self/environ')",
@@ -76,7 +78,7 @@ class TestSqlHardening(unittest.TestCase):
     def test_dangerous_queries_fail(self):
         for sql in MUST_FAIL:
             with self.subTest(sql=sql):
-                with self.assertRaises(BLOCKED):
+                with self.assertRaises(_blocked()):
                     run_user_query(self.con, sql)
 
     def test_dangerous_queries_fail_even_without_guard(self):
@@ -117,7 +119,7 @@ class TestSqlHardening(unittest.TestCase):
         orig = sql_safety.QUERY_TIMEOUT_S
         sql_safety.QUERY_TIMEOUT_S = 1
         try:
-            with self.assertRaises(QueryTimeoutError):
+            with self.assertRaises(sql_safety.QueryTimeoutError):
                 run_user_query(self.con, "SELECT COUNT(*) FROM range(100000000000)")
         finally:
             sql_safety.QUERY_TIMEOUT_S = orig

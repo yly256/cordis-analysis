@@ -8,6 +8,7 @@ calls are made.
 Run from the repo root:  python -m unittest tests.test_error_handling -v
 """
 
+import ast
 import os
 import sys
 import unittest
@@ -74,7 +75,8 @@ class TestQueryErrorMessage(unittest.TestCase):
 class TestAppErrorHandling(unittest.TestCase):
     def test_startup_failure_shows_generic_message(self):
         boom = RuntimeError("internal detail /mount/src/secret-path")
-        with _blank_env(), mock.patch.object(sql_safety, "connect_readonly", side_effect=boom), \
+        # Patch duckdb.connect, not sql_safety.connect_readonly: app.py reloads sql_safety
+        with _blank_env(), mock.patch("duckdb.connect", side_effect=boom), \
                 self.assertLogs("cordis", "ERROR") as logs:
             at = _run_app()
         self.assertEqual([e.value for e in at.error], [GENERIC])
@@ -129,6 +131,57 @@ class TestAppErrorHandling(unittest.TestCase):
         self.assertEqual(len(at.exception), 0)
         self.assertEqual(len(at.error), 0)
         self.assertGreater(len(at.tabs), 0)
+
+
+@unittest.skipUnless(DB_PATH.exists(), "cordis.duckdb not present")
+class TestModuleReload(unittest.TestCase):
+    def test_reruns_reload_sql_safety_but_keep_cached_connection(self):
+        real_connect = duckdb.connect
+        with _blank_env(), mock.patch("duckdb.connect", side_effect=real_connect) as spy:
+            at = _run_app()                      # clears caches, opens the connection
+            # Simulate the stale sql_safety that caused the prod ImportError: an older
+            # version (no _LOADED_MTIME stamp) missing a newer function
+            del sql_safety._LOADED_MTIME
+            del sql_safety.query_error_message
+            at.run()                              # rerun: reload + cached connection
+        self.assertEqual(len(at.exception), 0)
+        self.assertTrue(callable(sql_safety.query_error_message))  # restored by reload
+        self.assertEqual(spy.call_count, 1)      # connection opened once, never reopened
+        cfg = spy.call_args.kwargs["config"]
+        self.assertFalse(cfg["enable_external_access"])
+        self.assertTrue(cfg["lock_configuration"])
+
+    def test_unchanged_module_is_not_reloaded(self):
+        cls_before = sql_safety.UnsafeQueryError
+        with _blank_env():
+            at = _run_app()
+            at.run()
+        self.assertEqual(len(at.exception), 0)
+        self.assertIs(sql_safety.UnsafeQueryError, cls_before)  # except clauses stay valid
+
+
+class TestAiInstructions(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        tree = ast.parse((ROOT / "app.py").read_text(encoding="utf-8"))
+        node = next(n for n in tree.body if isinstance(n, ast.Assign)
+                    and getattr(n.targets[0], "id", None) == "_SQL_SYSTEM")
+        cls.prompt = ast.literal_eval(node.value)
+
+    def test_no_project_level_sum_across_organizations_join(self):
+        for rule in self.prompt.split("\n- "):
+            if "organizations" not in rule:
+                continue
+            with self.subTest(rule=rule[:60]):
+                for bad in ("SUM(p.totalCost)", "SUM(p.ecMaxContribution)",
+                            "SUM(totalCost)", "SUM(ecMaxContribution)"):
+                    self.assertNotIn(bad, rule)
+
+    def test_join_key_and_contribution_rules(self):
+        self.assertNotIn("p.projectID", self.prompt)
+        self.assertIn("o.projectID = p.id", self.prompt)
+        self.assertIn("SUM(o.ecContribution)", self.prompt)
+        self.assertIn("NO DOUBLE COUNTING", self.prompt)
 
 
 class TestNoTracebackOutput(unittest.TestCase):

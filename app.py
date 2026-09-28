@@ -17,6 +17,13 @@ import plotly.express as px
 import urllib.request
 from pathlib import Path
 import anthropic
+import importlib
+import sql_safety
+# Streamlit Cloud hot-reloads app.py but keeps stale local modules in sys.modules: reload
+# sql_safety only when its file changed since it was loaded (i.e. after a deploy), so its
+# exception classes aren't redefined on every run. Cached connections are unaffected.
+if getattr(sql_safety, "_LOADED_MTIME", None) != os.path.getmtime(sql_safety.__file__):
+    importlib.reload(sql_safety)
 from sql_safety import (
     connect_readonly, run_user_query, UnsafeQueryError, QueryTimeoutError, MAX_ROWS,
     query_error_message, log,
@@ -370,11 +377,16 @@ _SQL_SYSTEM = (
     "- COUNTRY PARTICIPATION: when counting projects per country, always count ALL projects "
     "where that country appears in ANY role (coordinator or participant). Do this by joining "
     "the organizations table and counting DISTINCT project ids, e.g.: "
-    "SELECT o.country, COUNT(DISTINCT p.id) AS projects, ROUND(SUM(p.totalCost)/1e6,2) AS total_funding_M "
+    "SELECT o.country, COUNT(DISTINCT p.id) AS projects, ROUND(SUM(o.ecContribution)/1e6,2) AS eu_contribution_M "
     "FROM projects p JOIN organizations o ON o.projectID = p.id "
     "WHERE <filters on p> AND o.country IS NOT NULL "
     "GROUP BY o.country ORDER BY projects DESC. "
     "Only use coordinator_country when the user explicitly asks about coordinators only.\n"
+    "- NO DOUBLE COUNTING: projects has one row per project but organizations has one row per "
+    "participant, so after joining organizations NEVER SUM/AVG project-level columns "
+    "(p.totalCost, p.ecMaxContribution) — each project would be counted once per partner. "
+    "For funding per country/organisation use the participant-level o.ecContribution "
+    "(EU contribution to that participant); for counts use COUNT(DISTINCT p.id).\n"
     "- NULL COUNTRIES: always exclude rows where the country/coordinator_country column IS NULL "
     "by adding the appropriate IS NOT NULL filter.\n"
     "- TOP COORDINATORS: when ranking coordinators, always GROUP BY coordinator_name only (not by country). "
@@ -551,6 +563,13 @@ st.markdown(f"""
   </span>
 </div>
 """, unsafe_allow_html=True)
+
+_PRIVACY_NOTE_HTML = (
+    "<p style='font-size:0.82em;color:#555;margin-top:0;'>"
+    "Questions and queries you run are shown to all visitors in the Query History tab. "
+    "Don't enter personal or confidential information. History is cleared from time to time. "
+    "This site uses Google Analytics.</p>"
+)
 
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "📊 Overview", "🔬 Deep Dive", "🌍 Geography",
@@ -753,7 +772,8 @@ with tab4:
     st.markdown(
         "<p style='font-size:0.95em;color:#003399;font-weight:600;margin-bottom:0.5rem;'>"
         "Tables: <code>projects</code> · <code>organizations</code> · <code>topics</code> · "
-        "<code>legal_basis</code> · <code>euro_sci_voc</code> · <code>policy_priorities</code></p>",
+        "<code>legal_basis</code> · <code>euro_sci_voc</code> · <code>policy_priorities</code></p>"
+        + _PRIVACY_NOTE_HTML,
         unsafe_allow_html=True,
     )
 
@@ -797,9 +817,7 @@ with tab5:
     st.markdown(
         "<p style='font-size:0.95em;color:#003399;font-weight:600;margin-bottom:0.2rem;'>"
         "Claude translates your question into SQL, runs it, and summarises the results. "
-        "Sidebar filters apply automatically.</p>"
-        "<p style='font-size:0.82em;color:#555;margin-top:0;'>"
-        "Note: successful queries are saved temporarily for reuse — history may be cleared after a period of inactivity. No other tracking is made.</p>",
+        "Sidebar filters apply automatically.</p>" + _PRIVACY_NOTE_HTML,
         unsafe_allow_html=True,
     )
 
@@ -941,7 +959,7 @@ with tab6:
     st.markdown(
         "<p style='font-size:0.95em;color:#003399;font-weight:600;margin-bottom:0.5rem;'>"
         "All unique queries ever run, sorted by popularity. "
-        "Select one and click ▶ Run to replay.</p>",
+        "Select one and click ▶ Run to replay.</p>" + _PRIVACY_NOTE_HTML,
         unsafe_allow_html=True,
     )
 

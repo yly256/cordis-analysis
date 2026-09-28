@@ -8,6 +8,7 @@ Hardened DuckDB access for visitor-supplied SQL (SQL tab, Ask Claude, replayed h
 """
 
 import logging
+import os
 import threading
 
 import duckdb
@@ -15,6 +16,9 @@ import pandas as pd
 
 QUERY_TIMEOUT_S = 15
 MAX_ROWS = 10_000
+
+# app.py compares this with the file's current mtime to detect a stale module after a deploy
+_LOADED_MTIME = os.path.getmtime(__file__)
 
 # Server-side log (Streamlit Cloud "Manage app" logs). Visitors never see this.
 log = logging.getLogger("cordis")
