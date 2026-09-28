@@ -17,6 +17,9 @@ import plotly.express as px
 import urllib.request
 from pathlib import Path
 import anthropic
+from sql_safety import (
+    connect_readonly, run_user_query, UnsafeQueryError, QueryTimeoutError, MAX_ROWS,
+)
 from dotenv import load_dotenv
 import streamlit.components.v1 as _components
 
@@ -197,7 +200,7 @@ try:
     @st.cache_resource
     def get_con():
         print(f"[DB] opening cordis.duckdb read-only from {DB_PATH}")
-        return duckdb.connect(DB_PATH, read_only=True)
+        return connect_readonly(DB_PATH)
 
     @st.cache_resource
     def get_hcon():
@@ -481,9 +484,9 @@ def _render_query_table(rows_df: pd.DataFrame, key_prefix: str, height: int = 32
             sel = rows_df.iloc[sel_idx].to_dict()
             with st.spinner("Running query…"):
                 try:
-                    r = con.execute(sel["sql_text"]).df()
+                    r, _trunc = run_user_query(con, sel["sql_text"])
                     increment_queries_run()
-                    st.success(f"{len(r):,} rows returned")
+                    st.success(f"{len(r):,} rows returned" + (f" (capped at {MAX_ROWS:,})" if _trunc else ""))
                     st.dataframe(r, width="stretch", hide_index=True)
                     st.download_button("⬇ Download CSV", r.to_csv(index=False),
                                        f"{key_prefix}_result.csv", "text/csv")
@@ -491,6 +494,8 @@ def _render_query_table(rows_df: pd.DataFrame, key_prefix: str, height: int = 32
                         st.info(sel["summary"])
                     _save_query(sel["description"], sel["question"],
                                 sel["sql_hash"], sel["sql_text"], sel.get("summary", ""))
+                except (UnsafeQueryError, QueryTimeoutError) as e:
+                    st.info(f"The cached query couldn't run. {e}")
                 except Exception as e:
                     st.info(f"The cached query couldn't run.\n\n_Detail: {e}_")
 
@@ -749,12 +754,14 @@ with tab4:
 
         if run_clicked:
             try:
-                result = con.execute(q).df()
+                result, _trunc = run_user_query(con, q)
                 increment_queries_run()
-                st.success(f"{len(result):,} rows returned")
+                st.success(f"{len(result):,} rows returned" + (f" (capped at {MAX_ROWS:,})" if _trunc else ""))
                 st.dataframe(result, width="stretch", hide_index=True)
                 csv = result.to_csv(index=False)
                 st.download_button("⬇ Download CSV", csv, "result.csv", "text/csv")
+            except (UnsafeQueryError, QueryTimeoutError) as e:
+                st.error(str(e))
             except Exception as e:
                 st.error(f"SQL error: {e}")
 
@@ -798,17 +805,24 @@ with tab5:
                     with st.expander("Generated SQL", expanded=False):
                         st.code(sql, language="sql")
 
-                    result = None
+                    result, _trunc = None, False
                     with st.spinner("Running query…"):
                         try:
-                            result = con.execute(sql).df()
+                            result, _trunc = run_user_query(con, sql)
+                        except QueryTimeoutError as e:
+                            st.info(f"{e} Try a narrower question.")
                         except Exception as e:
                             with st.spinner("Fixing query…"):
                                 sql = _fix_sql(question, sql, str(e), W())
                             with st.expander("Corrected SQL", expanded=False):
                                 st.code(sql, language="sql")
                             try:
-                                result = con.execute(sql).df()
+                                result, _trunc = run_user_query(con, sql)
+                            except (UnsafeQueryError, QueryTimeoutError):
+                                st.info(
+                                    "Sorry, I wasn't able to generate a working query for that question. "
+                                    "Try rephrasing, or use the SQL tab for full control."
+                                )
                             except Exception as e2:
                                 st.info(
                                     "Sorry, I wasn't able to generate a working query for that question. "
@@ -818,7 +832,7 @@ with tab5:
 
                     if result is not None:
                         increment_queries_run()
-                        st.success(f"{len(result):,} rows returned")
+                        st.success(f"{len(result):,} rows returned" + (f" (capped at {MAX_ROWS:,})" if _trunc else ""))
                         st.dataframe(result, width="stretch", hide_index=True)
                         st.download_button("⬇ Download CSV", result.to_csv(index=False),
                                            "ai_query_result.csv", "text/csv")
@@ -872,9 +886,9 @@ with tab5:
                     _ai5_sel = last10.iloc[_ai5_idx].to_dict()
                     with st.spinner("Running query…"):
                         try:
-                            _r = con.execute(_ai5_sel["sql_text"]).df()
+                            _r, _trunc = run_user_query(con, _ai5_sel["sql_text"])
                             increment_queries_run()
-                            st.success(f"{len(_r):,} rows returned")
+                            st.success(f"{len(_r):,} rows returned" + (f" (capped at {MAX_ROWS:,})" if _trunc else ""))
                             st.dataframe(_r, width="stretch", hide_index=True)
                             st.download_button("⬇ Download CSV", _r.to_csv(index=False),
                                                "ai_query_result.csv", "text/csv")
@@ -883,6 +897,8 @@ with tab5:
                             _save_query(_ai5_sel["description"], _ai5_sel["question"],
                                         _ai5_sel["sql_hash"], _ai5_sel["sql_text"],
                                         _ai5_sel.get("summary", ""))
+                        except (UnsafeQueryError, QueryTimeoutError) as _e:
+                            st.info(f"The cached query couldn't run. {_e}")
                         except Exception as _e:
                             st.info(f"The cached query couldn't run — try typing the question again.\n\n_Detail: {_e}_")
 
