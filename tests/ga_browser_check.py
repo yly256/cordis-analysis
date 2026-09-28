@@ -28,6 +28,7 @@ ROOT = Path(__file__).resolve().parent.parent
 PORT = 8599
 BASE = f"http://localhost:{PORT}/"
 GOOGLE = re.compile(r"googletagmanager\.com|google-analytics\.com|analytics\.google\.com|doubleclick\.net")
+EXT_REFERRER = "https://www.orientos.com/cordis-db-analysis?campaign=secret"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36")
 
@@ -74,8 +75,8 @@ class Visit:
             if "/g/collect" in req.url:
                 self.collect.append(req.url)
 
-    def open(self, url=BASE):
-        self.page.goto(url)
+    def open(self, url=BASE, referer=None):
+        self.page.goto(url, referer=referer)
         self.page.wait_for_selector("#cordis-cookie-settings", state="attached", timeout=90000)
 
     def ga_cookies(self):
@@ -93,7 +94,8 @@ def main():
 
             # (a) first visit
             v = Visit(browser)
-            v.open(BASE + "?email=test%40example.com&q=secret&utm_source=newsletter#frag")
+            v.open(BASE + "?email=test%40example.com&q=secret&utm_source=newsletter#frag",
+                   referer=EXT_REFERRER)
             banner = v.page.locator("#cordis-consent-banner")
             webdriver = v.page.evaluate("navigator.webdriver")
             v.page.wait_for_timeout(4000)
@@ -127,6 +129,11 @@ def main():
                   gtag and v.ga_cookies() and cfg == expected and (not v.collect or dl == expected),
                   f"gtag={gtag}, _ga={v.ga_cookies()}, page_location={cfg}, "
                   f"collect dl={dl or '(no hit captured)'}, stored={v.consent()}")
+            dr = parse_qs(urlparse(v.collect[0]).query).get("dr", [""])[0] if v.collect else None
+            doc_ref = v.page.evaluate("document.referrer")
+            check("(b2) referrer sent as origin only",
+                  doc_ref == EXT_REFERRER and dr == "https://www.orientos.com",
+                  f"document.referrer={doc_ref} -> dr={dr}")
 
             # (f) rerun: press "r" (Streamlit rerun hotkey), then count injected scripts
             v.page.locator("body").press("r")
@@ -158,6 +165,21 @@ def main():
             check("(c) Decline + reload: no Google requests, old _ga deleted, banner hidden",
                   not v.google and not v.ga_cookies() and v.consent() == "denied" and shown == 0,
                   f"google={len(v.google)}, _ga={v.ga_cookies()}, stored={v.consent()}, banner={shown}")
+            v.ctx.close()
+
+            # (g) same-origin referrer with a query string: GA gets no referrer at all
+            v = Visit(browser)
+            v.open(BASE, referer=BASE + "?secret=1")
+            v.page.click("#cordis-consent-banner button:text-is('Accept')")
+            for _ in range(40):
+                if v.collect:
+                    break
+                v.page.wait_for_timeout(500)
+            dr = parse_qs(urlparse(v.collect[0]).query).get("dr", [""])[0] if v.collect else None
+            doc_ref = v.page.evaluate("document.referrer")
+            check("(g) same-origin referrer: none sent to GA",
+                  v.collect and "secret" not in v.collect[0] and not dr,
+                  f"document.referrer={doc_ref} -> dr={dr!r}")
             v.ctx.close()
 
             # Close (x) counts as Decline

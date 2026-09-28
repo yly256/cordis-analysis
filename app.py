@@ -134,9 +134,21 @@ def get_queries_run_count():
         _log_counter_error("read", e)
         return None
 
-def increment_queries_run():
+QUERIES_RUN_SESSION_CAP = 30  # most increments one browser session can add
+
+def increment_queries_run(sql: str):
     """Call exactly once per actual query execution (a Run/Ask button
-    succeeding), never on tab switches or filter changes."""
+    succeeding), never on tab switches or filter changes.
+
+    Anti-inflation: each distinct query counts at most once per session, and a
+    session adds at most QUERIES_RUN_SESSION_CAP. Only query hashes are kept in
+    the session — no IPs or identifiers.
+    """
+    counted = st.session_state.setdefault("_counted_query_hashes", set())
+    h = _sql_hash(sql)
+    if h in counted or len(counted) >= QUERIES_RUN_SESSION_CAP:
+        return None
+    counted.add(h)
     try:
         r = _get_counter_redis()
         if r is None:
@@ -572,7 +584,7 @@ def _render_query_table(rows_df: pd.DataFrame, key_prefix: str, height: int = 32
             with st.spinner("Running query…"):
                 try:
                     r, _trunc = run_user_query(con, sel["sql_text"])
-                    increment_queries_run()
+                    increment_queries_run(sel["sql_text"])
                     st.success(f"{len(r):,} rows returned" + (f" (capped at {MAX_ROWS:,})" if _trunc else ""))
                     st.dataframe(r, width="stretch", hide_index=True)
                     st.download_button("⬇ Download CSV", r.to_csv(index=False),
@@ -794,10 +806,12 @@ with tab3:
         )
 
     st.subheader("Country Participation Map")
+    # Sidebar filters apply via the projects subquery (organizations has its own FP column)
     map_df = con.execute(f"""
         SELECT country, COUNT(DISTINCT projectID) AS projects
         FROM organizations
         WHERE country IS NOT NULL
+          AND projectID IN (SELECT id FROM projects WHERE {W()})
         GROUP BY 1 ORDER BY 2 DESC
     """).df()
     # Convert ISO alpha-2 → alpha-3 (plotly choropleth requires ISO-3)
@@ -855,7 +869,7 @@ with tab4:
         if run_clicked:
             try:
                 result, _trunc = run_user_query(con, q)
-                increment_queries_run()
+                increment_queries_run(q)
                 st.success(f"{len(result):,} rows returned" + (f" (capped at {MAX_ROWS:,})" if _trunc else ""))
                 st.dataframe(result, width="stretch", hide_index=True)
                 csv = result.to_csv(index=False)
@@ -933,7 +947,7 @@ with tab5:
                                 )
 
                     if result is not None:
-                        increment_queries_run()
+                        increment_queries_run(sql)
                         st.success(f"{len(result):,} rows returned" + (f" (capped at {MAX_ROWS:,})" if _trunc else ""))
                         st.dataframe(result, width="stretch", hide_index=True)
                         st.download_button("⬇ Download CSV", result.to_csv(index=False),
@@ -996,7 +1010,7 @@ with tab5:
                     with st.spinner("Running query…"):
                         try:
                             _r, _trunc = run_user_query(con, _ai5_sel["sql_text"])
-                            increment_queries_run()
+                            increment_queries_run(_ai5_sel["sql_text"])
                             st.success(f"{len(_r):,} rows returned" + (f" (capped at {MAX_ROWS:,})" if _trunc else ""))
                             st.dataframe(_r, width="stretch", hide_index=True)
                             st.download_button("⬇ Download CSV", _r.to_csv(index=False),

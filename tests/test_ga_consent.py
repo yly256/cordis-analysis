@@ -55,6 +55,13 @@ class TestConsentScript(unittest.TestCase):
         self.assertNotIn("u.hash", body)
         self.assertNotIn("location.href;", body)
 
+    def test_referrer_sent_as_origin_only(self):
+        self.assertIn("page_location: cleanLocation(), page_referrer: referrerOrigin()", JS)
+        body = JS[JS.index("function referrerOrigin"):JS.index("function loadGA")]
+        self.assertIn("new URL(ref).origin", body)
+        self.assertIn('origin === w.location.origin ? "" : origin', body)
+        self.assertIn('return "";', body)  # no/invalid referrer -> nothing
+
     def test_bot_check(self):
         self.assertIn("w.navigator.webdriver === true", JS)
         self.assertIn("/HeadlessChrome|Headless|bot/i.test(ua)", JS)

@@ -44,6 +44,18 @@
     return u.origin + path + (query ? "?" + query : "");
   }
 
+  // Referrer origin only (e.g. "https://www.orientos.com"), never its path or query.
+  // On Streamlit Cloud this page is framed, so the visitor's real referrer is the
+  // top page's; referrals from the app's own origin count as none.
+  function referrerOrigin() {
+    var ref = "";
+    try { ref = w.top.document.referrer; } catch (e) { ref = d.referrer; }
+    try {
+      var origin = new URL(ref).origin;
+      return origin === w.location.origin ? "" : origin;
+    } catch (e) { return ""; }
+  }
+
   function loadGA() {
     if (isBot()) return;
     w["ga-disable-" + GA_ID] = false;
@@ -61,7 +73,7 @@
     });
     w.gtag("consent", "update", { analytics_storage: "granted" });
     w.gtag("js", new Date());
-    w.gtag("config", GA_ID, { page_location: cleanLocation() });
+    w.gtag("config", GA_ID, { page_location: cleanLocation(), page_referrer: referrerOrigin() });
     var s = d.createElement("script");
     s.id = "ga-script-tag";
     s.async = true;
